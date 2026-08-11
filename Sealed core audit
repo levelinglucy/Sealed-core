@@ -1,0 +1,139 @@
+
+
+The easiest version is the new single-file front door:
+
+Download ⁠￼SEALED_BLACK_BOX_v2_2.py⁠￼
+
+It contains the SEALED Core + SealedVault + hardened Gatekeeper + snapshot workflow in one 2,192-line script. If you only want one file to keep, that’s the one I’d choose.
+
+I also preserved the modular versions:
+
+Download ⁠￼sealed_core.py⁠￼
+Download ⁠￼gatekeeper_v2_2.py⁠￼
+Download ⁠￼sealed_snapshot.py⁠￼
+Download the usage README⁠￼
+
+And everything together:
+
+Download ⁠￼SEALED_v2_2_bundle.zip⁠￼
+
+The new Gatekeeper is substantially stronger than the earlier placeholder version. A request cannot declare its own trusted role anymore. Instead, principal_id is bound locally to a fixed role and scope. Requests are HMAC-signed over canonical JSON, have timestamp/skew checks and unique nonces, write actions require idempotency keys, legitimate retries with fresh nonces reuse their original result, and external acknowledgers can only operate on tickets belonging to their assigned scope.
+
+I tested specifically that:
+
+PASS  caller-supplied OWNER role ignored
+PASS  replayed nonce rejected
+PASS  fresh-nonce idempotent retry returns original result
+PASS  external ACK accepted inside its scope
+PASS  external ACK rejected outside its scope
+PASS  writes without idempotency key rejected
+PASS  OWNER vault sealing through Gatekeeper works
+PASS  monolithic Gatekeeper request interface works
+
+The Core/Vault suite is also still:
+
+SEALED Core v2.2 self-test
+==============================
+PASS  atomic create + encrypted state
+PASS  lifecycle persists across reopen
+PASS  HELPER redaction
+PASS  transaction rollback
+PASS  close lifecycle
+PASS  vault file seal/unseal
+PASS  vault directory seal/restore
+PASS  vault HELPER redaction
+PASS  tamper detection fails closed
+9/9 passed
+
+For the really simple route, set your secret:
+
+export SEALED_OWNER_SECRET='your-long-local-secret'
+
+Then black-box basically any file, image, backup, disk image, or folder:
+
+python SEALED_BLACK_BOX_v2_2.py snapshot /path/to/item
+
+Or give it a label:
+
+python SEALED_BLACK_BOX_v2_2.py snapshot ~/Pictures --label "Pictures backup"
+
+See what is sealed:
+
+python SEALED_BLACK_BOX_v2_2.py list
+
+Restore a single file:
+
+python SEALED_BLACK_BOX_v2_2.py unseal OBJECT_ID --out restored.jpg
+
+Restore a folder:
+
+python SEALED_BLACK_BOX_v2_2.py restore-dir OBJECT_ID /path/to/restore
+
+For a computer backup/disk image, it works the same way:
+
+python SEALED_BLACK_BOX_v2_2.py snapshot /backups/my-laptop.img --label "Laptop image"
+
+That can be a very large file because the vault encrypts it in chunks rather than trying to load the entire machine image into RAM.
+
+For the live operating system itself, I’d still use FileVault/BitLocker/LUKS underneath SEALED. Then the stack becomes:
+
+live computer
+    ↓
+full-disk encryption
+    ↓
+SEALED black box
+    ├── photos/images
+    ├── documents
+    ├── source code
+    ├── folders
+    ├── archives
+    ├── backups
+    └── whole-machine disk images
+
+One tiny truthfulness fix also went in while testing: when you seal a directory, its encrypted record now remembers the original directory path, rather than accidentally recording the temporary .tar.gz staging path.
+
+Hashes for preservation:
+
+SEALED_BLACK_BOX_v2_2.py
+c42e190e861eff33f0547f515806df4887f78d8a52b490a5e375f53cbe4a8c69
+sealed_core.py
+cbb86fb19eceeb144103e9a5a9cdfed1f8aec89dff482a389f022f44da9dc533
+gatekeeper_v2_2.py
+a500bbb14cfc66d09c590c366bfee91f6bdbfe9fafe1ccab8c44d3f27271c8e6
+sealed_snapshot.py
+1b33b8df99e54c869d70a4e546dd9d1cb57108b7ba56d86c3052e55eb82e7a92
+SEALED_v2_2_bundle.zip
+c261645b20f03dc4437f964f8c7810ed5e561748c6e8f56a50b1cc6b5ffc661d
+WORKSHOP_LEDGER
+last_project:
+  SEALED v2.2 Black Box
+what_changed:
+  - completed hardened Gatekeeper v2.2
+  - removed caller-trusted roles
+  - added per-principal HMAC authentication
+  - added nonce replay resistance
+  - added write idempotency
+  - added ticket scope isolation
+  - added explicit action/output policies
+  - added OWNER-only vault operations through Gatekeeper
+  - built one-command snapshot helper
+  - built complete single-file monolithic front door
+  - preserved modular originals
+  - fixed directory provenance path
+  - packaged everything into one ZIP
+tests:
+  core_vault: 9/9 passed
+  gatekeeper_security: passed
+  monolith_gatekeeper: passed
+  snapshot_helper: passed
+possible_next_threads:
+  - vault object deletion/pruning
+  - key rotation / re-keying
+  - encrypted export/import between authorised machines
+  - V1 → v2.2 migration utility
+  - signed backup manifests
+  - recovery-key design
+github_modified:
+  no
+
+This is getting much closer to an actual little black-box system rather than just an encrypted ticket script. 🖤📦🔐
