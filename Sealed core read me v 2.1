@@ -1,0 +1,79 @@
+SEALED v2.2 — BLACK BOX BUNDLE
+==============================
+
+Recommended easy path
+---------------------
+Use:
+    SEALED_BLACK_BOX_v2_2.py
+
+It contains:
+- SEALED Core v2.2
+- SealedVault
+- hardened Gatekeeper v2.2
+- snapshot front door
+
+Dependency:
+    pip install cryptography
+
+Set your owner secret:
+    export SEALED_OWNER_SECRET='your-long-local-secret'
+
+Snapshot a folder, image, arbitrary file, backup, or disk image:
+    python SEALED_BLACK_BOX_v2_2.py snapshot /path/to/item --label "My snapshot"
+
+List vault objects:
+    python SEALED_BLACK_BOX_v2_2.py list
+
+Restore a file:
+    python SEALED_BLACK_BOX_v2_2.py unseal OBJECT_ID --out /path/to/output
+
+Restore a directory bundle:
+    python SEALED_BLACK_BOX_v2_2.py restore-dir OBJECT_ID /path/to/restore/root
+
+Run core/vault tests:
+    python SEALED_BLACK_BOX_v2_2.py self-test
+
+Hardened Gatekeeper
+-------------------
+Gatekeeper does NOT trust a caller-supplied role. Principals and roles come from
+SEALED_PRINCIPALS_JSON, local environment configuration only.
+
+Example:
+    export SEALED_PRINCIPALS_JSON='{
+      "owner-local": {
+        "role": "OWNER",
+        "secret": "replace-with-long-random-principal-secret",
+        "scope_id": "owner"
+      }
+    }'
+
+Requests are HMAC-signed and use timestamps + nonces. Write actions require an
+idempotency key. External acknowledgers are restricted to their scope.
+
+The monolith can execute a signed request from a JSON file:
+    python SEALED_BLACK_BOX_v2_2.py request request.json
+
+The modular gatekeeper_v2_2.py also exposes:
+    build_signed_request(...)
+    sign_request(...)
+    gatekeeper_request(...)
+
+Modular files
+-------------
+sealed_core.py
+    Core + vault.
+
+gatekeeper_v2_2.py
+    Hardened local policy/authentication layer.
+
+sealed_snapshot.py
+    Tiny one-command snapshot helper.
+
+Important whole-computer note
+-----------------------------
+SEALED can encrypt a backup file or disk-image file and can seal folders/files.
+It does not replace transparent live full-disk encryption. Use FileVault,
+BitLocker, or LUKS for the running computer, then use SEALED as an additional
+application-level black box for especially sensitive data or machine backups.
+
+No GitHub files were modified while creating this bundle.
