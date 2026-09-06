@@ -11,6 +11,8 @@ This repository uses a local-only modular stack:
 ## Required environment variables
 
 - `SEALED_OWNER_SECRET` (required): owner secret used by `SealedCore` key derivation.
+- `SEALED_HOST_ID` (optional but recommended on VMs/containers): stable host identifier
+  mixed into machine fingerprint derivation when hardware identity is less stable.
 - `SEALED_PRINCIPALS_JSON` (required for `gatekeeper_v2_2.py`): JSON mapping
   principal IDs to `{role, secret, scope_id}` objects.
 

@@ -44,6 +44,7 @@ Run integrity/lifecycle tests:
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import hmac
@@ -164,13 +165,17 @@ def _decrypt_blob(key: bytearray | bytes, enc: dict) -> Any:
     if not isinstance(enc, dict):
         raise ValueError("encrypted envelope must be an object")
 
-    nonce_hex = enc.get("nonce_hex", enc.get("nonce_b64"))
-    cipher_hex = enc.get("cipher_hex", enc.get("cipher_b64"))
-    if not isinstance(nonce_hex, str) or not isinstance(cipher_hex, str):
+    if isinstance(enc.get("nonce_hex"), str) and isinstance(enc.get("cipher_hex"), str):
+        nonce = bytes.fromhex(enc["nonce_hex"])
+        cipher = bytes.fromhex(enc["cipher_hex"])
+    elif isinstance(enc.get("nonce_b64"), str) and isinstance(enc.get("cipher_b64"), str):
+        nonce = base64.b64decode(enc["nonce_b64"], validate=True)
+        cipher = base64.b64decode(enc["cipher_b64"], validate=True)
+    else:
         raise ValueError("encrypted envelope missing nonce/ciphertext")
 
     aesgcm = AESGCM(bytes(key))
-    plaintext = aesgcm.decrypt(bytes.fromhex(nonce_hex), bytes.fromhex(cipher_hex), None)
+    plaintext = aesgcm.decrypt(nonce, cipher, None)
     return json.loads(plaintext.decode("utf-8"))
 
 
@@ -363,17 +368,19 @@ class SealedStore:
 
     def _load_legacy_v2_files_locked(self) -> Optional[Dict[str, Any]]:
         mapping = {
-            "tickets": ("tickets.json", {}),
-            "metrics": ("metrics.json", []),
-            "intents": ("intents.json", []),
+            "tickets": "tickets.json",
+            "metrics": "metrics.json",
+            "intents": "intents.json",
         }
-        if not any((self.dir / fname).exists() for fname, _ in mapping.values()):
+        present = {key: (self.dir / fname).exists() for key, fname in mapping.items()}
+        if not any(present.values()):
             return None
+        if not all(present.values()):
+            raise ValueError("incomplete legacy v2 store layout")
 
         state = self._new_state()
-        for key, (fname, default) in mapping.items():
-            path = self.dir / fname
-            state[key] = self._read_encrypted_file(path) if path.exists() else copy.deepcopy(default)
+        for key, fname in mapping.items():
+            state[key] = self._read_encrypted_file(self.dir / fname)
         state["migrated_from"] = "public-v2-three-file-layout"
         return self._validate_state(state)
 
