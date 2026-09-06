@@ -138,6 +138,12 @@ def _derive_master_key(owner_passphrase: str, machine_fp: str) -> bytearray:
     return bytearray(key)
 
 
+def _derive_subkey(master: bytearray | bytes, label: str) -> bytearray:
+    if not isinstance(label, str) or not label:
+        raise ValueError("label is required")
+    return bytearray(hmac.new(bytes(master), label.encode("utf-8"), hashlib.sha256).digest())
+
+
 def _canonical_json_bytes(data: Any) -> bytes:
     return json.dumps(
         data,
@@ -603,6 +609,50 @@ class SealedCore:
 
     def list_open_summary(self) -> List[dict]:
         return [self._redact_ticket(ticket) for ticket in self.store.list_open_tickets()]
+
+    # Vault APIs are part of full SEALED Core v2.2 and are intentionally not
+    # reconstructed in this v2.1 file.
+    def seal_file(
+        self,
+        path: str,
+        *,
+        label: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+
+    def seal_directory(
+        self,
+        path: str,
+        *,
+        label: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+
+    def list_vault_summary(self) -> List[dict]:
+        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+
+    def unseal_file(
+        self,
+        object_id: str,
+        *,
+        output_path: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> str:
+        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+
+    def restore_directory(self, object_id: str, output_dir: str, *, overwrite: bool = False) -> str:
+        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+
+    def seal_path(
+        self,
+        path: Path | str,
+        *,
+        label: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
 
     def debug_snapshot(self) -> dict:
         return self.diagnostic_dump()
