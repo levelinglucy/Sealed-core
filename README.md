@@ -29,8 +29,30 @@ export SEALED_PRINCIPALS_JSON='{
 }'
 ```
 
+## Quick start (modular)
+
+```bash
+python -m pip install cryptography
+export SEALED_OWNER_SECRET='replace-with-a-long-random-secret'
+export SEALED_PRINCIPALS_JSON='{
+  "owner-local": {
+    "role": "OWNER",
+    "secret": "replace-with-a-long-random-principal-secret",
+    "scope_id": "owner"
+  }
+}'
+python -c "import sealed_core, gatekeeper_v2_2, sealed_snapshot; print('imports-ok')"
+```
+
+## Vault examples
+
+```bash
+# Snapshot file or directory
+python sealed_snapshot.py /path/to/item --label "My snapshot"
+```
+
 ## Notes
 
 - No network listener is required; imports are local Python module calls.
-- Vault methods referenced by Gatekeeper/snapshot are declared on `SealedCore` but
-  require the full SEALED Core v2.2 implementation.
+- Gatekeeper write actions are local-only and require signed requests plus
+  idempotency keys as documented in `gatekeeper_v2_2.py`.

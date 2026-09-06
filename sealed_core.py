@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sealed_core.py — SEALED Core v2.1 (complete reconstructed build)
+sealed_core.py — SEALED Core v2.2
 
 Provenance
 ----------
@@ -52,6 +52,8 @@ import json
 import os
 import platform
 import re
+import shutil
+import tarfile
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -63,8 +65,9 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-STATE_SCHEMA = "SEALED_STATE_V2_1"
-ENVELOPE_SCHEMA = "SEALED_ENVELOPE_V2_1"
+STATE_SCHEMA = "SEALED_STATE_V2_2"
+LEGACY_STATE_SCHEMAS = {"SEALED_STATE_V2_1"}
+ENVELOPE_SCHEMA = "SEALED_ENVELOPE_V2_2"
 PBKDF2_ITERATIONS = 600_000
 DEFAULT_STORAGE_DIR = "sealed_storage"
 
@@ -75,6 +78,7 @@ MAX_SOURCE_CHARS = 80
 MAX_TIMESTAMP_CHARS = 80
 MAX_METRICS = 50_000
 MAX_INTENTS = 50_000
+VAULT_CHUNK_BYTES = 4 * 1024 * 1024
 
 
 def _safe_chmod(path: os.PathLike | str, mode: int) -> None:
@@ -325,24 +329,31 @@ class SealedStore:
             "tickets": {},
             "metrics": [],
             "intents": [],
+            "vault": {"objects": {}},
         }
 
     def _validate_state(self, state: Any) -> Dict[str, Any]:
         if not isinstance(state, dict):
             raise ValueError("sealed state root must be an object")
         schema = state.get("schema")
-        if schema not in (STATE_SCHEMA, None):
+        if schema not in ({STATE_SCHEMA} | LEGACY_STATE_SCHEMAS | {None}):
             raise ValueError(f"unsupported sealed state schema: {schema!r}")
 
         tickets = state.get("tickets", {})
         metrics = state.get("metrics", [])
         intents = state.get("intents", [])
+        vault = state.get("vault", {"objects": {}})
         if not isinstance(tickets, dict):
             raise ValueError("state.tickets must be an object")
         if not isinstance(metrics, list):
             raise ValueError("state.metrics must be a list")
         if not isinstance(intents, list):
             raise ValueError("state.intents must be a list")
+        if not isinstance(vault, dict):
+            raise ValueError("state.vault must be an object")
+        objects = vault.get("objects", {})
+        if not isinstance(objects, dict):
+            raise ValueError("state.vault.objects must be an object")
 
         normalized = dict(state)
         normalized["schema"] = STATE_SCHEMA
@@ -352,6 +363,7 @@ class SealedStore:
         normalized["tickets"] = tickets
         normalized["metrics"] = metrics[-MAX_METRICS:]
         normalized["intents"] = intents[-MAX_INTENTS:]
+        normalized["vault"] = {"objects": objects}
         return normalized
 
     def _decode_envelope(self, raw: Any) -> Any:
@@ -484,6 +496,24 @@ class SealedStore:
         self._refresh_for_read()
         return len(self._state["metrics"])
 
+    def put_vault_object(self, record: dict) -> None:
+        object_id = record.get("object_id")
+        if not isinstance(object_id, str) or not object_id:
+            raise ValueError("object_id required")
+
+        def mutate():
+            self._state["vault"]["objects"][object_id] = copy.deepcopy(record)
+        self._auto_mutation(mutate)
+
+    def get_vault_object(self, object_id: str) -> Optional[dict]:
+        self._refresh_for_read()
+        item = self._state["vault"]["objects"].get(object_id)
+        return copy.deepcopy(item) if item is not None else None
+
+    def list_vault_objects(self) -> List[dict]:
+        self._refresh_for_read()
+        return copy.deepcopy(list(self._state["vault"]["objects"].values()))
+
     def close(self) -> None:
         try:
             self._state.clear()
@@ -546,6 +576,12 @@ class SealedCore:
         machine_fp = _get_machine_fingerprint()
         self.master_key = _derive_master_key(owner_passphrase, machine_fp)
         self.store = SealedStore(self.master_key, storage_dir=storage_dir)
+        self.vault_dir = self.store.dir / "vault"
+        self.vault_chunks_dir = self.vault_dir / "chunks"
+        self.vault_dir.mkdir(parents=True, exist_ok=True)
+        self.vault_chunks_dir.mkdir(parents=True, exist_ok=True)
+        _safe_chmod(self.vault_dir, 0o700)
+        _safe_chmod(self.vault_chunks_dir, 0o700)
         self.routes = copy.deepcopy(self.ROUTES)
         self.default_route = "SUPPORT"
         self.sla_warning_minutes_before_deadline = 5
@@ -617,8 +653,6 @@ class SealedCore:
     def list_open_summary(self) -> List[dict]:
         return [self._redact_ticket(ticket) for ticket in self.store.list_open_tickets()]
 
-    # Vault APIs are part of full SEALED Core v2.2 and are intentionally not
-    # reconstructed in this v2.1 file.
     def seal_file(
         self,
         path: str,
@@ -626,7 +660,17 @@ class SealedCore:
         label: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> dict:
-        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+        self._require_owner_mode()
+        source = Path(path).expanduser().resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"file does not exist: {source}")
+        return self._seal_file_like(
+            source=source,
+            kind="file",
+            source_path=str(source),
+            label=label,
+            metadata=metadata,
+        )
 
     def seal_directory(
         self,
@@ -635,10 +679,30 @@ class SealedCore:
         label: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> dict:
-        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+        self._require_owner_mode()
+        source = Path(path).expanduser().resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(f"directory does not exist: {source}")
+
+        with tempfile.TemporaryDirectory(prefix="sealed-vault-dir-") as temp_root:
+            archive_path = Path(temp_root) / (source.name + ".tar.gz")
+            with tarfile.open(archive_path, "w:gz") as tar:
+                tar.add(source, arcname=source.name)
+            return self._seal_file_like(
+                source=archive_path,
+                kind="directory",
+                source_path=str(source),
+                label=label,
+                metadata=metadata,
+            )
 
     def list_vault_summary(self) -> List[dict]:
-        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+        items = self.store.list_vault_objects()
+        items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        if self.mode == "OWNER":
+            return items
+        allowed = {"object_id", "kind", "created_at", "size_bytes", "chunk_count", "sha256", "label"}
+        return [{key: copy.deepcopy(value) for key, value in item.items() if key in allowed} for item in items]
 
     def unseal_file(
         self,
@@ -647,10 +711,41 @@ class SealedCore:
         output_path: Optional[str] = None,
         overwrite: bool = False,
     ) -> str:
-        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+        self._require_owner_mode()
+        obj = self._get_vault_object_or_raise(object_id)
+        if obj.get("kind") != "file":
+            raise ValueError("object is not a file")
+
+        target = Path(output_path).expanduser().resolve() if output_path else Path.cwd() / obj["original_name"]
+        target = target.resolve()
+        self._restore_vault_object_to_file(obj, target, overwrite=overwrite)
+        return str(target)
 
     def restore_directory(self, object_id: str, output_dir: str, *, overwrite: bool = False) -> str:
-        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+        self._require_owner_mode()
+        obj = self._get_vault_object_or_raise(object_id)
+        if obj.get("kind") != "directory":
+            raise ValueError("object is not a directory bundle")
+        if not isinstance(output_dir, str) or not output_dir.strip():
+            raise ValueError("output_dir is required")
+
+        restore_root = Path(output_dir).expanduser().resolve()
+        restore_root.mkdir(parents=True, exist_ok=True)
+        final_dir = restore_root / obj["original_name"]
+        if final_dir.exists() and not overwrite:
+            raise FileExistsError(f"destination already exists: {final_dir}")
+        if final_dir.exists() and overwrite:
+            if final_dir.is_dir():
+                shutil.rmtree(final_dir)
+            else:
+                final_dir.unlink()
+
+        with tempfile.TemporaryDirectory(prefix="sealed-restore-dir-") as temp_root:
+            archive_path = Path(temp_root) / f"{obj['object_id']}.tar.gz"
+            self._restore_vault_object_to_file(obj, archive_path, overwrite=True)
+            with tarfile.open(archive_path, "r:gz") as tar:
+                self._safe_extract_tar(tar, restore_root)
+        return str(final_dir)
 
     def seal_path(
         self,
@@ -659,7 +754,12 @@ class SealedCore:
         label: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> dict:
-        raise NotImplementedError("Vault APIs require the full SEALED Core v2.2 implementation")
+        source = Path(path).expanduser().resolve()
+        if source.is_dir():
+            return self.seal_directory(str(source), label=label, metadata=metadata)
+        if source.is_file():
+            return self.seal_file(str(source), label=label, metadata=metadata)
+        raise FileNotFoundError(f"path does not exist: {source}")
 
     def debug_snapshot(self) -> dict:
         return self.diagnostic_dump()
@@ -770,6 +870,172 @@ class SealedCore:
         if "subject" in intent:
             redacted["subject"] = "[REDACTED]"
         return redacted
+
+    def _require_owner_mode(self) -> None:
+        if self.mode != "OWNER":
+            raise PermissionError("vault write/restore actions require OWNER mode")
+
+    def _vault_object_id(self) -> str:
+        return "OBJ-" + _utc_now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6].upper()
+
+    @staticmethod
+    def _vault_label(label: Optional[str]) -> Optional[str]:
+        if label is None:
+            return None
+        if not isinstance(label, str):
+            raise ValueError("label must be a string")
+        text = label.strip()
+        if len(text) > 500:
+            raise ValueError("label exceeds 500 characters")
+        return text or None
+
+    @staticmethod
+    def _vault_metadata(metadata: Optional[dict]) -> dict:
+        if metadata is None:
+            return {}
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata must be an object")
+        return copy.deepcopy(metadata)
+
+    def _vault_key_for(self, object_id: str) -> bytearray:
+        return _derive_subkey(self.master_key, "SEALED_VAULT:" + object_id)
+
+    def _chunk_path(self, object_id: str, index: int) -> Path:
+        return self.vault_chunks_dir / f"{object_id}.part{index:08d}.json"
+
+    @staticmethod
+    def _chunk_aad(object_id: str, index: int) -> bytes:
+        return f"{object_id}:{index}".encode("utf-8")
+
+    def _seal_file_like(
+        self,
+        *,
+        source: Path,
+        kind: str,
+        source_path: str,
+        label: Optional[str],
+        metadata: Optional[dict],
+    ) -> dict:
+        object_id = self._vault_object_id()
+        created_at = self._now_iso()
+        key = self._vault_key_for(object_id)
+        hasher = hashlib.sha256()
+        size_bytes = 0
+        chunk_count = 0
+        chunk_paths: List[Path] = []
+        try:
+            aesgcm = AESGCM(bytes(key))
+            with source.open("rb") as handle:
+                while True:
+                    chunk = handle.read(VAULT_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    size_bytes += len(chunk)
+                    nonce = os.urandom(12)
+                    cipher = aesgcm.encrypt(nonce, chunk, self._chunk_aad(object_id, chunk_count))
+                    payload = {"nonce_hex": nonce.hex(), "cipher_hex": cipher.hex()}
+                    chunk_path = self._chunk_path(object_id, chunk_count)
+                    _atomic_json_write(chunk_path, payload)
+                    chunk_paths.append(chunk_path)
+                    chunk_count += 1
+
+            record = {
+                "object_id": object_id,
+                "kind": kind,
+                "created_at": created_at,
+                "label": self._vault_label(label),
+                "metadata": self._vault_metadata(metadata),
+                "source_path": source_path,
+                "original_name": Path(source_path).name,
+                "size_bytes": size_bytes,
+                "chunk_count": chunk_count,
+                "sha256": hasher.hexdigest(),
+                "chunk_prefix": f"{object_id}.part",
+            }
+            with self.store.transaction():
+                self.store.put_vault_object(record)
+                self.store.append_metric({
+                    "metric_type": "VAULT_OBJECT_SEALED",
+                    "ts": self._now_iso(),
+                    "object_id": object_id,
+                    "kind": kind,
+                    "size_bytes": size_bytes,
+                    "chunk_count": chunk_count,
+                })
+            return {
+                "object_id": object_id,
+                "kind": kind,
+                "created_at": created_at,
+                "size_bytes": size_bytes,
+                "chunk_count": chunk_count,
+                "sha256": hasher.hexdigest(),
+            }
+        except Exception:
+            for chunk_path in chunk_paths:
+                try:
+                    chunk_path.unlink()
+                except OSError:
+                    pass
+            raise
+        finally:
+            for i in range(len(key)):
+                key[i] = 0
+
+    def _get_vault_object_or_raise(self, object_id: str) -> dict:
+        if not isinstance(object_id, str) or not re.fullmatch(r"OBJ-\d{8}-\d{6}-[A-F0-9]{6}", object_id.strip().upper()):
+            raise ValueError("invalid object_id format")
+        normalized = object_id.strip().upper()
+        obj = self.store.get_vault_object(normalized)
+        if obj is None:
+            raise FileNotFoundError(f"vault object not found: {normalized}")
+        return obj
+
+    def _restore_vault_object_to_file(self, obj: dict, target: Path, *, overwrite: bool) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"destination already exists: {target}")
+        if target.exists() and overwrite and target.is_dir():
+            raise IsADirectoryError(f"destination is a directory: {target}")
+        hasher = hashlib.sha256()
+        key = self._vault_key_for(obj["object_id"])
+        try:
+            aesgcm = AESGCM(bytes(key))
+            with target.open("wb") as out:
+                for index in range(int(obj.get("chunk_count", 0))):
+                    chunk_path = self._chunk_path(obj["object_id"], index)
+                    if not chunk_path.exists():
+                        raise FileNotFoundError(f"missing vault chunk: {chunk_path.name}")
+                    payload = json.loads(chunk_path.read_text(encoding="utf-8"))
+                    nonce = bytes.fromhex(payload["nonce_hex"])
+                    cipher = bytes.fromhex(payload["cipher_hex"])
+                    plain = aesgcm.decrypt(nonce, cipher, self._chunk_aad(obj["object_id"], index))
+                    hasher.update(plain)
+                    out.write(plain)
+            if hasher.hexdigest() != obj.get("sha256"):
+                raise ValueError("vault integrity check failed")
+        except Exception:
+            try:
+                if target.exists():
+                    target.unlink()
+            except OSError:
+                pass
+            raise
+        finally:
+            for i in range(len(key)):
+                key[i] = 0
+
+    @staticmethod
+    def _safe_extract_tar(tar: tarfile.TarFile, destination: Path) -> None:
+        destination = destination.resolve()
+        for member in tar.getmembers():
+            member_path = (destination / member.name).resolve()
+            if not str(member_path).startswith(str(destination) + os.sep) and member_path != destination:
+                raise ValueError("tar archive contains unsafe path")
+        try:
+            tar.extractall(path=destination, filter="data")
+        except TypeError:
+            tar.extractall(path=destination)
 
     @staticmethod
     def _bounded_text(value: Any, field: str, limit: int, *, default: str = "") -> str:
@@ -1024,6 +1290,52 @@ def _run_self_tests() -> int:
 
         record("close lifecycle", close_test)
 
+        def vault_file_test():
+            source = Path(temp_root) / "vault-file.bin"
+            restored = Path(temp_root) / "vault-file.restored.bin"
+            source.write_bytes(os.urandom(64_000))
+            core = SealedCore(secret, storage_dir=storage)
+            sealed = core.seal_file(str(source), label="self-test-file")
+            out = core.unseal_file(sealed["object_id"], output_path=str(restored), overwrite=True)
+            assert Path(out).read_bytes() == source.read_bytes()
+            core.close()
+
+        record("vault file seal/unseal", vault_file_test)
+
+        def vault_directory_test():
+            source_dir = Path(temp_root) / "vault-dir"
+            (source_dir / "nested").mkdir(parents=True, exist_ok=True)
+            (source_dir / "a.txt").write_text("alpha", encoding="utf-8")
+            (source_dir / "nested" / "b.txt").write_text("bravo", encoding="utf-8")
+            restore_root = Path(temp_root) / "vault-restore-root"
+            core = SealedCore(secret, storage_dir=storage)
+            sealed = core.seal_directory(str(source_dir), label="self-test-dir")
+            restored = Path(core.restore_directory(sealed["object_id"], str(restore_root), overwrite=True))
+            assert (restored / "a.txt").read_text(encoding="utf-8") == "alpha"
+            assert (restored / "nested" / "b.txt").read_text(encoding="utf-8") == "bravo"
+            core.close()
+
+        record("vault directory seal/restore", vault_directory_test)
+
+        def vault_helper_redaction_test():
+            source = Path(temp_root) / "vault-helper.txt"
+            source.write_text("helper-redaction", encoding="utf-8")
+            core = SealedCore(secret, storage_dir=storage)
+            obj = core.seal_file(str(source), label="helper-redaction", metadata={"private": True})
+            owner_items = core.list_vault_summary()
+            owner_item = next(item for item in owner_items if item["object_id"] == obj["object_id"])
+            assert "source_path" in owner_item
+            core.close()
+
+            helper = SealedCore(secret, mode="HELPER", storage_dir=storage)
+            helper_items = helper.list_vault_summary()
+            helper_item = next(item for item in helper_items if item["object_id"] == obj["object_id"])
+            assert "source_path" not in helper_item
+            assert "metadata" not in helper_item
+            helper.close()
+
+        record("vault HELPER redaction", vault_helper_redaction_test)
+
         def tamper_test():
             tamper_storage = str(Path(temp_root) / "tamper_store")
             core = SealedCore(secret, storage_dir=tamper_storage)
@@ -1045,7 +1357,7 @@ def _run_self_tests() -> int:
 
         record("tamper detection fails closed", tamper_test)
 
-    print("SEALED Core v2.1 self-test")
+    print("SEALED Core v2.2 self-test")
     print("=" * 30)
     passed = 0
     for name, ok, detail in checks:
@@ -1059,7 +1371,7 @@ def _run_self_tests() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="SEALED Core v2.1 local-only core")
+    parser = argparse.ArgumentParser(description="SEALED Core v2.2 local-only core")
     parser.add_argument("--self-test", action="store_true", help="run isolated lifecycle/integrity tests")
     parser.add_argument("--diagnostic", action="store_true", help="print local diagnostic snapshot")
     parser.add_argument("--watchdog", action="store_true", help="run one local SLA watchdog scan")
