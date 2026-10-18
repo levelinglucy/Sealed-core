@@ -540,6 +540,14 @@ class GatekeeperV22:
             return result
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        except NotImplementedError:
+            return {"ok": False, "error": "NOT_IMPLEMENTED"}
+        except PermissionError:
+            return {"ok": False, "error": "FORBIDDEN"}
+        except FileNotFoundError:
+            return {"ok": False, "error": "NOT_FOUND"}
+        except FileExistsError:
+            return {"ok": False, "error": "ALREADY_EXISTS"}
         except Exception:
             # Deliberately avoid reflecting internal details to callers.
             return {"ok": False, "error": "INTERNAL_ERROR"}
