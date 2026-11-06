@@ -325,6 +325,9 @@ class GatekeeperState:
                     "request_hash": request_hash,
                     "created_at": _format_utc(_utc_now()),
                     "status": "PENDING",
+                    # Unlinked candidate correlation ID. This proves NO core
+                    # outcome until a future atomic core ledger references it.
+                    "operation_id": secrets.token_hex(16),
                 }
                 self._prune(state)
 
@@ -345,11 +348,16 @@ class GatekeeperState:
         idem_key = f"{principal_id}:{idempotency_key}"
         with _StoreFileLock(self.lock_path):
             state = self._load_locked()
+            previous = state["idempotency"].get(idem_key, {})
             state["idempotency"][idem_key] = {
                 "request_hash": request_hash,
                 "created_at": _format_utc(_utc_now()),
                 "status": "COMMITTED",
                 "result": copy.deepcopy(result),
+                # Keep the correlation ID for future audit. Older completed
+                # receipts without an ID remain readable.
+                **({"operation_id": previous["operation_id"]}
+                   if "operation_id" in previous else {}),
             }
             self._save_locked(state)
 
@@ -363,6 +371,34 @@ class GatekeeperState:
         with _StoreFileLock(self.lock_path):
             state = self._load_locked()
             return state["ticket_scopes"].get(ticket_id)
+
+    def list_pending_local(self) -> list[dict]:
+        """Read-only owner-local diagnostics; never clear uncertain writes.
+
+        The stored composite key cannot be parsed reliably: both principal IDs
+        and business keys may include ':'. Fingerprint it instead of exposing
+        the original business key, principal, nonce, or payload.
+        """
+        with _StoreFileLock(self.lock_path):
+            state = self._load_locked()
+            pending = []
+            for key_ref, item in state["idempotency"].items():
+                if not isinstance(item, dict) or "result" in item:
+                    continue
+                pending.append({
+                    "key_ref_sha256": hashlib.sha256(
+                        key_ref.encode("utf-8")
+                    ).hexdigest(),
+                    "operation_id": item.get("operation_id"),
+                    "request_hash": item.get("request_hash"),
+                    "created_at": item.get("created_at"),
+                    "status": "PENDING",
+                })
+            return sorted(
+                pending,
+                key=lambda item: (item["created_at"] or "",
+                                  item["key_ref_sha256"]),
+            )
 
     def close(self) -> None:
         for i in range(len(self.key)):
@@ -597,6 +633,25 @@ class GatekeeperV22:
 
     def close(self) -> None:
         self.state.close()
+
+
+def inspect_pending_local(storage_dir: str = DEFAULT_STORAGE_DIR) -> list[dict]:
+    """Read-only owner-secret recovery view, NOT a signed or network action.
+
+    A pending correlation ID is not evidence that the core committed. Never
+    auto-clear an uncertain reservation based on this diagnostic.
+    """
+    owner_secret = os.environ.get("SEALED_OWNER_SECRET")
+    if not owner_secret:
+        raise RuntimeError("SEALED_OWNER_SECRET environment variable required")
+    state = GatekeeperState(owner_secret, storage_dir=storage_dir)
+    try:
+        # Avoid reporting a transient PENDING from an ordinary in-flight
+        # cooperating request by acquiring the same outer operation lock.
+        with _StoreFileLock(state.request_lock_path):
+            return state.list_pending_local()
+    finally:
+        state.close()
 
 
 def gatekeeper_request(request: dict, storage_dir: str = DEFAULT_STORAGE_DIR) -> dict:
