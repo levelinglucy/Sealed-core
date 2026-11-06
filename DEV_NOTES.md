@@ -11,6 +11,18 @@
 
 [README](./README.md) · [Recovery guide](./GATEKEEPER_RECOVERY.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
 
+## Decision: add read-only owner-local cross-store triage, not a resolver (2026-11-06; draft PR #8)
+
+**Problem:** owners can inspect encrypted PENDING reservations but cannot readily distinguish a missing core operation reference from a linked, core-committed ticket. Manually comparing decrypted records risks exposing payloads or prematurely clearing an ambiguous write. Historical and non-ticket operations still have no atomic receipt.
+
+**Alternatives:** automatic PENDING deletion on missing receipt (unsafe negative inference); copying raw encrypted state to third parties (privacy risk); full interactive recovery write API (too much authority for this stage); or owner-local **read-only evidence classification** against a single authenticated core snapshot (chosen). The helper takes the same outer request lock as normal Gatekeeper operations, reads one verified core generation and never mutates encrypted state.
+
+**Trade-off:** `inspect_pending_evidence_local()` reports whether an opaque ID/hash maps to a structurally consistent atomic ticket receipt, or an uncertain/conflicting/legacy state. It does **not** know the original action for unlinked records or authenticate a fresh signed principal/current authorized scope. All records remain pending; no raw key, principal, scope, ticket or payload is returned. A matching receipt is useful audit evidence, not a recovery decision or permission to bypass the normal signed Gatekeeper path. It may create local lock/directories even though encrypted state is unchanged.
+
+**Acceptance/validation:** synthetic precommit, postcommit, hash-conflict, legacy, missing-secret and no-policy-endpoint tests; compare both original encrypted state files byte-for-byte before/after inspection. This is not power-loss/device validation. See [recovery runbook](./GATEKEEPER_RECOVERY.md).
+
+**Next:** design an operator-approved way to reconcile *without guessing* legacy/non-ticket results; rehearse code-and-store downgrade on isolated copies; keep PR #8 draft until the remaining release gates are justified.
+
 ## Decision: use core-proven signed ticket replay; preserve fail-closed uncertainty (2026-11-06; draft PR #8)
 
 **Problem / previous behaviour:** the experimental core receipt existed, but signed Gatekeeper `NEW_TICKET` still invoked `core.handle()`, leaving actual PENDING IDs unlinked. A crash after creating the ticket but before Gatekeeper's separate ticket-scope/receipt writes could strand a valid signed retry. Matching ticket fields are not sufficient proof.
