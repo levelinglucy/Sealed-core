@@ -153,5 +153,37 @@ class SafeDirectoryRestoreTests(unittest.TestCase):
         self.assertFalse(list(fresh_root.glob(".photos.sealed-restore-*")))
 
 
+    def test_unexpected_archive_root_is_rejected(self):
+        archive = self.root / "wrong-root.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            content = b"other root"
+            member = tarfile.TarInfo("other/another.txt")
+            member.size = len(content)
+            tar.addfile(member, io.BytesIO(content))
+        bad = self._seal_custom_archive(archive.read_bytes())
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            self.core.restore_directory(bad, str(self.restore_root), overwrite=True)
+        self.assert_old_intact()
+        self.assert_clean()
+
+    def test_old_python_fallback_rejects_symlink_archive(self):
+        archive = self.root / "link.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            directory = tarfile.TarInfo("photos")
+            directory.type = tarfile.DIRTYPE
+            tar.addfile(directory)
+            link = tarfile.TarInfo("photos/escape")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../outside"
+            tar.addfile(link)
+        bad = self._seal_custom_archive(archive.read_bytes())
+        # Simulate a Python runtime without the safe data extraction filter.
+        with mock.patch.object(tarfile, "data_filter", None, create=True):
+            with self.assertRaisesRegex(ValueError, "links or special"):
+                self.core.restore_directory(bad, str(self.restore_root), overwrite=True)
+        self.assert_old_intact()
+        self.assert_clean()
+
+
 if __name__ == "__main__":
     unittest.main()
