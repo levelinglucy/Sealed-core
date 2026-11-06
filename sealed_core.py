@@ -992,6 +992,12 @@ class SealedCore:
         return obj
 
     def _restore_vault_object_to_file(self, obj: dict, target: Path, *, overwrite: bool) -> None:
+        """Verify a restored object in a sibling temp file before exposing it.
+
+        A missing/tampered chunk must never truncate an existing destination.
+        Non-overwrite publication uses an exclusive hard link so a file created
+        by another process while decryption runs cannot be replaced.
+        """
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists() and not overwrite:
             raise FileExistsError(f"destination already exists: {target}")
@@ -999,9 +1005,18 @@ class SealedCore:
             raise IsADirectoryError(f"destination is a directory: {target}")
         hasher = hashlib.sha256()
         key = self._vault_key_for(obj["object_id"])
+        staging_path = None
         try:
             aesgcm = AESGCM(bytes(key))
-            with target.open("wb") as out:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix="." + target.name + ".sealed-",
+                suffix=".tmp",
+                dir=str(target.parent),
+                delete=False,
+            ) as out:
+                staging_path = Path(out.name)
+                _safe_chmod(staging_path, 0o600)
                 for index in range(int(obj.get("chunk_count", 0))):
                     chunk_path = self._chunk_path(obj["object_id"], index)
                     if not chunk_path.exists():
@@ -1012,16 +1027,27 @@ class SealedCore:
                     plain = aesgcm.decrypt(nonce, cipher, self._chunk_aad(obj["object_id"], index))
                     hasher.update(plain)
                     out.write(plain)
+                out.flush()
+                os.fsync(out.fileno())
+
             if hasher.hexdigest() != obj.get("sha256"):
                 raise ValueError("vault integrity check failed")
-        except Exception:
-            try:
-                if target.exists():
-                    target.unlink()
-            except OSError:
-                pass
-            raise
+
+            if overwrite:
+                # Replacement is atomic for an existing regular file on one FS.
+                os.replace(staging_path, target)
+            else:
+                # link() fails with FileExistsError if a concurrent writer wins.
+                os.link(staging_path, target)
+                staging_path.unlink()
+            _safe_chmod(target, 0o600)
+            _fsync_directory(target.parent)
         finally:
+            if staging_path is not None:
+                try:
+                    staging_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             for i in range(len(key)):
                 key[i] = 0
 
