@@ -2,13 +2,25 @@
 
 ## Development summary
 
-**Current stage:** file-restore integrity candidate merged on main at `385c4cd0` (PR #2), without a stable tag or release.  
-**Goal:** make corrupt, absent or failed-to-authenticate vault data incapable of truncating an existing restored file.  
-**Latest change:** staged authenticated restoration with private sibling temp files, `os.replace()` for requested overwrite and exclusive `os.link()` for new files.  
-**Validation:** 12/12 unittest cases and nine core self-tests passed in both PR and merged-main CI, Python 3.12. [PR run](https://github.com/levelinglucy/Sealed-core/actions/runs/42217418606) · [merged-main run](https://github.com/levelinglucy/Sealed-core/actions/runs/42217565879).  
-**Next:** harden `restore_directory()` overwrite safely; investigate gatekeeper idempotency consistency across process crashes and concurrent requests.  
-**Blockers:** directory overwrite still destructive prior to archive validation; power-loss and iPhone/Pythonista filesystems untested; no verified tagged stable release.  
+**Stage:** directory-restore integrity candidate on topic branch; no stable tag or publication.
+**Goal:** prevent a corrupt or malformed encrypted directory archive from deleting existing restored content.
+**Latest change:** stage verified archive and extracted tree, validate one expected top-level directory, then rename the previous destination to a recoverable sibling before publishing the new tree; roll back on ordinary failure.
+**Checks:** eleven new isolated directory tests added; final CI pending. Existing file restore and core self-tests remain requirements.
+**Next:** run candidate CI, address findings, merge when safe, then investigate gatekeeper consistency and obtain trusted Pythonista evidence.
+**Blockers / known risk:** multi-rename publication is not crash-atomic; interrupted runs can leave `.NAME.sealed-backup-*` and private temporary plaintext. No guarantee against independent concurrent writers or power loss; old Python tar fallbacks decline links/special files.
 [README](./README.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
+
+## Decision: stage and roll back directory restoration (2026-11-06)
+
+**Before:** `restore_directory(overwrite=True)` removed the destination with `rmtree` / `unlink` before even decrypting the archive. A missing vault chunk, altered AES-GCM ciphertext, invalid tar, extraction error or interrupted write could therefore destroy the only available prior output.
+
+**Alternatives:** (a) decrypt and extract directly into the old destination — no safe failure isolation; (b) make a full copied backup before in-place extraction — more I/O, still exposes partial new content; (c) stage the verified extracted directory beside the destination, rename old to backup, then rename new into place, with rollback — bounded memory, additional disk space, distinct rollback path. Selected (c).
+
+**Implementation:** validate the original directory name; create owner-private temporary storage inside the target root; reuse vault chunk authentication and full SHA-256 verification for the archive; use `tarfile`'s data filter when supported and enforce a single expected top-level root. On older Python without the filter, reject archive links and special entries rather than allowing potentially unsafe extraction. Keep previous content in `.NAME.sealed-backup-UUID` outside the auto-removed staging directory. Restore it if the second rename fails, and leave it untouched if rollback itself fails. Delete the old backup only after publishing new data; preserve historical source files and the local-only design.
+
+**Trade-offs:** requires approximately a second full plaintext archive plus extracted tree during staging; no long-term API/schema changes. There is a short gap between moving the old tree and making the new one visible. Abrupt termination, storage failure, or an uncooperative concurrent writer is not a guaranteed recoverable transaction. A crash can leave backup folders or plaintext staging; do not blindly delete them. Symlink-containing archives on old Python may no longer restore (security-first compatibility restriction). Directory data and permissions were not power-loss fsynced exhaustively; not certified on iPhone or non-POSIX filesystems.
+
+**Acceptance:** missing/corrupt chunks, authenticated invalid tar and traversal attempts preserve old content; injected failed promotion rolls back; if rollback itself fails old data remains in a recoverable sibling; successful overwrite and fresh restores preserve bytes; standard smoke tests pass. Revisit if an audited portable crash-atomic directory exchange or a safe cross-platform exclusive publication mechanism becomes available.
 
 ## Decision: verify before publishing restored file (2026-11-06)
 

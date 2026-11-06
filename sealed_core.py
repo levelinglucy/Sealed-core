@@ -722,29 +722,86 @@ class SealedCore:
         return str(target)
 
     def restore_directory(self, object_id: str, output_dir: str, *, overwrite: bool = False) -> str:
+        """Verify and extract a directory in a sibling staging tree first.
+
+        On overwrite, move the existing destination to a recoverable sibling
+        backup and roll it back if publishing the staged tree fails. A hard
+        crash between renames may leave the old tree in .sealed-backup-*.
+        """
         self._require_owner_mode()
         obj = self._get_vault_object_or_raise(object_id)
         if obj.get("kind") != "directory":
             raise ValueError("object is not a directory bundle")
         if not isinstance(output_dir, str) or not output_dir.strip():
             raise ValueError("output_dir is required")
+        original_name = obj.get("original_name")
+        if (not isinstance(original_name, str) or not original_name
+                or original_name in (".", "..")
+                or "/" in original_name or "\\" in original_name):
+            raise ValueError("unsafe original directory name")
 
         restore_root = Path(output_dir).expanduser().resolve()
         restore_root.mkdir(parents=True, exist_ok=True)
-        final_dir = restore_root / obj["original_name"]
+        final_dir = restore_root / original_name
+        if final_dir.is_symlink():
+            raise ValueError("refusing to restore over a symbolic link")
         if final_dir.exists() and not overwrite:
             raise FileExistsError(f"destination already exists: {final_dir}")
-        if final_dir.exists() and overwrite:
-            if final_dir.is_dir():
-                shutil.rmtree(final_dir)
-            else:
-                final_dir.unlink()
 
-        with tempfile.TemporaryDirectory(prefix="sealed-restore-dir-") as temp_root:
-            archive_path = Path(temp_root) / f"{obj['object_id']}.tar.gz"
-            self._restore_vault_object_to_file(obj, archive_path, overwrite=True)
+        # Staging must be on the target filesystem for the final rename.
+        with tempfile.TemporaryDirectory(
+            prefix=f".{original_name}.sealed-restore-", dir=str(restore_root)
+        ) as temp_root:
+            stage = Path(temp_root)
+            archive_path = stage / "archive.tar.gz"
+            extracted_root = stage / "extracted"
+            extracted_root.mkdir()
+            # Reuses the authenticated, checksummed file-restoration path.
+            self._restore_vault_object_to_file(obj, archive_path, overwrite=False)
             with tarfile.open(archive_path, "r:gz") as tar:
-                self._safe_extract_tar(tar, restore_root)
+                self._safe_extract_tar(tar, extracted_root, expected_root=original_name)
+
+            staged_dir = extracted_root / original_name
+            if (staged_dir.is_symlink() or not staged_dir.is_dir()
+                    or set(extracted_root.iterdir()) != {staged_dir}):
+                raise ValueError("directory archive has an invalid top-level tree")
+
+            # Keep the backup outside TemporaryDirectory: an unsuccessful
+            # rollback must never be followed by automatic backup deletion.
+            backup_path = restore_root / (
+                f".{original_name}.sealed-backup-{uuid.uuid4().hex}"
+            )
+            moved_old = False
+            try:
+                if final_dir.is_symlink():
+                    raise ValueError("refusing to restore over a symbolic link")
+                if final_dir.exists():
+                    if not overwrite:
+                        raise FileExistsError(f"destination already exists: {final_dir}")
+                    os.replace(final_dir, backup_path)
+                    moved_old = True
+                os.replace(staged_dir, final_dir)
+                _fsync_directory(restore_root)
+            except BaseException:
+                if moved_old:
+                    try:
+                        os.replace(backup_path, final_dir)
+                        _fsync_directory(restore_root)
+                    except OSError as rollback_error:
+                        raise RuntimeError(
+                            f"directory restore failed; previous content was "
+                            f"preserved at {backup_path} but automatic rollback failed"
+                        ) from rollback_error
+                raise
+
+            if moved_old:
+                # Cleanup only after the staged tree was published. An
+                # interrupted cleanup leaves an identifiable old backup.
+                if backup_path.is_dir():
+                    shutil.rmtree(backup_path)
+                else:
+                    backup_path.unlink()
+                _fsync_directory(restore_root)
         return str(final_dir)
 
     def seal_path(
@@ -1052,15 +1109,38 @@ class SealedCore:
                 key[i] = 0
 
     @staticmethod
-    def _safe_extract_tar(tar: tarfile.TarFile, destination: Path) -> None:
+    def _safe_extract_tar(
+        tar: tarfile.TarFile, destination: Path, *, expected_root: str
+    ) -> None:
+        """Confine archive members to one directory, including on older Python.
+
+        Python's data extraction filter validates link targets and special
+        members. Older Python without that filter accepts only files/dirs,
+        never symlinks, hardlinks or devices, to avoid unsafe fallback.
+        """
         destination = destination.resolve()
-        for member in tar.getmembers():
-            member_path = (destination / member.name).resolve()
-            if not str(member_path).startswith(str(destination) + os.sep) and member_path != destination:
+        members = tar.getmembers()
+        has_data_filter = callable(getattr(tarfile, "data_filter", None))
+        for member in members:
+            name = member.name
+            parts = name.split("/")
+            if (not name or name.startswith("/") or "\\" in name
+                    or ".." in parts or parts[0] != expected_root):
+                raise ValueError("tar archive contains unsafe or unexpected path")
+            member_path = (destination / name).resolve()
+            if not (member_path == destination or
+                    str(member_path).startswith(str(destination) + os.sep)):
                 raise ValueError("tar archive contains unsafe path")
-        try:
+            if not has_data_filter and not (
+                member.isfile() or member.isdir()
+            ):
+                raise ValueError("archive links or special files require Python tar data filter")
+
+        if has_data_filter:
             tar.extractall(path=destination, filter="data")
-        except TypeError:
+        else:
+            # All members were prechecked and are plain files/directories,
+            # with no pre-existing tree that could contain a hostile link.
             tar.extractall(path=destination)
 
     @staticmethod
