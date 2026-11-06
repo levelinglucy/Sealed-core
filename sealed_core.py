@@ -1120,6 +1120,7 @@ class SealedCore:
         """
         destination = destination.resolve()
         members = tar.getmembers()
+        has_data_filter = callable(getattr(tarfile, "data_filter", None))
         for member in members:
             name = member.name
             parts = name.split("/")
@@ -1130,12 +1131,12 @@ class SealedCore:
             if not (member_path == destination or
                     str(member_path).startswith(str(destination) + os.sep)):
                 raise ValueError("tar archive contains unsafe path")
-            if not hasattr(tarfile, "data_filter") and not (
+            if not has_data_filter and not (
                 member.isfile() or member.isdir()
             ):
                 raise ValueError("archive links or special files require Python tar data filter")
 
-        if hasattr(tarfile, "data_filter"):
+        if has_data_filter:
             tar.extractall(path=destination, filter="data")
         else:
             # All members were prechecked and are plain files/directories,
