@@ -1,5 +1,14 @@
 # Sealed-core
 
+## Development summary
+
+**Status:** local-only modular stack; file-restore integrity repair under review on `noe/portfolio-restore-integrity` (no stable release/tag claimed).  
+**Latest change (2026-11-06):** stage decrypted vault files beside the target, verify every AES-GCM chunk and the whole-object SHA-256, then publish by atomic replacement or exclusive hard link. A corrupt/missing chunk no longer truncates an existing file when `overwrite=True`.  
+**Next steps:** (1) validate the exact PR and merged revision via Python CI; (2) fix directory restore's destructive pre-extraction overwrite in a separate bounded change; (3) review gatekeeper nonce/idempotency and scope transaction boundaries.  
+**Known limitations:** ordinary file restore writes temporary plaintext with owner-only filesystem permissions; a hard process crash can leave a staging file that should be removed securely. File restoration uses same-directory atomic publication, but this is not proof of full power-loss durability on every filesystem. Directory overwrite is **not yet safe** when extraction fails; avoid `restore_directory(..., overwrite=True)` with valuable existing contents until its repair is validated.  
+[Changelog](./CHANGELOG.md) · [Engineering decisions](./DEV_NOTES.md) · [Roadmap](./ROADMAP.md)
+
+
 ## Modular stack wiring
 
 This repository uses a local-only modular stack:
