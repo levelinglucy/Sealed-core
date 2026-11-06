@@ -1,5 +1,18 @@
 # Sealed-core changelog
 
+
+## Unreleased — directory-restore rollback candidate (2026-11-06)
+
+**Scope:** `sealed_core.py` directory restoration / tar extraction, nine synthetic integrity tests, README, engineering notes and roadmap.
+
+**Before:** `restore_directory(overwrite=True)` deleted any existing tree before authenticating encrypted archive chunks or validating the tar. Missing/tampered chunks or malformed paths could destroy previously restored data.
+
+**After:** verify encrypted chunks and whole-object hash, extract inside a sibling private staging directory with a single expected top-level tree and safe tar filtering, then move the old target to a recoverable sibling backup before publishing the staged tree. Roll back on ordinary publication failure; deliberately retain old backup if rollback fails. New tests cover missing and invalid ciphertext, malformed authenticated tar, path traversal, rollback successes/failures, overwrite and fresh restore round-trips and no-overwrite.
+
+**Validation:** tests introduced on topic branch; CI result pending when drafted. The verified baseline remains file-restore PR #2 / docs PR #3 (12/12 unittest + nine self-tests).
+
+**Limits and recovery:** this is not an atomic directory swap; sudden termination between renames may leave old content in `.NAME.sealed-backup-*` or expose a brief missing target. A failed rollback preserves the backup for manual restoration. Staging plaintext may persist after a hard crash. On Python without the tar data filter, archives with links/special files are rejected. No filesystem power-loss, concurrent-writer or Pythonista guarantee. No stable release/tag asserted.
+
 ## Unreleased — local-only file-restore integrity candidate (2026-11-06)
 
 **Scope:** `sealed_core.py`, `tests/test_verified_restore.py`, README and developer docs.
