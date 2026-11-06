@@ -2,13 +2,26 @@
 
 ## Development summary
 
-**Stage:** directory-restore integrity candidate merged via [PR #4](https://github.com/levelinglucy/Sealed-core/pull/4) at `7e647ed0`; no new stable tag or release.
-**Goal:** prevent a corrupt or malformed encrypted directory archive from deleting existing restored content.
-**Latest change:** stage verified archive and extracted tree, validate one expected top-level directory, then rename the previous destination to a recoverable sibling before publishing the new tree; roll back on ordinary failure.
-**Checks:** 23/23 unit tests and 9/9 core self-tests passed for each Python 3.11/3.12 on the exact [PR revision](https://github.com/levelinglucy/Sealed-core/actions/runs/42225523051) and [merged main](https://github.com/levelinglucy/Sealed-core/actions/runs/42225646052). Eleven new directory cases cover both normal restoration and failure recovery.
-**Next:** investigate gatekeeper consistency using isolated tests; consider crash-backup recovery tooling; obtain trusted Pythonista evidence.
-**Blockers / known risk:** multi-rename publication is not crash-atomic; interrupted runs can leave `.NAME.sealed-backup-*` and private temporary plaintext. No guarantee against independent concurrent writers or power loss; old Python tar fallbacks decline links/special files.
+**Stage:** local-only v2.2 Gatekeeper idempotency transaction candidate in [PR #6](https://github.com/levelinglucy/Sealed-core/pull/6), after integrated file and directory recovery candidates; no stable tag.
+**Goal:** signed concurrent retries should not execute the same side effect twice while local cooperating Gatekeeper callers are running.
+**Latest:** first reproduced duplicate side effects under parallel same-key, distinct-nonce requests in [unpatched PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234112137). Added cross-process request serialization over authentication, core action and cached result. Tests also exercise nonce replay, changed-payload key collision and real ticket scope isolation.
+**Evidence:** 26/26 tests and 9/9 core self-tests passed in [candidate CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234410661) on each of Python 3.11 and 3.12. Main-branch CI and final merge status must be verified separately.
+**Next:** validate merged revision; investigate crash interruption between core and Gatekeeper state; trusted Pythonista/device checks.
+**Limits:** operations are serialized through a local file lock, reducing simultaneous read throughput; a process crash after a side effect but before recording the receipt remains an unclosed exactly-once gap. Separate core writers, mobile file locking and power-loss behavior not proven.
+
 [README](./README.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
+
+## Decision: serialize Gatekeeper request transactions (2026-11-06)
+
+**Observed defect:** `consume_nonce_and_check_idempotency` persisted the nonce and checked for an existing result, but the business operation and `record_idempotent_result` happened later and outside any shared execution lock. Two valid signed requests from the same principal, with identical action/payload/idempotency key and distinct nonces, could both pass the check before either result existed. Isolated test-only PR SHA `f063752b` reproduced **2 side effects rather than 1** on Python 3.11 and 3.12, while sequential replay and key-collision checks passed. This is a local API concurrency defect, not a verified remote exploit.
+
+**Options:** (a) nonce lock alone — insufficient; (b) in-memory per-key mutex — insufficient across cooperating processes; (c) separate process-shared request lock across authentication, execution and result write — simple and fits existing `_StoreFileLock` cross-process convention; (d) durable transaction journal in the core store — better for recovery but a substantial, riskier schema/API change. Selected **(c)** for bounded repair and preserve (d) for a later milestone.
+
+**Implementation:** `GatekeeperState.request_lock_path` is distinct from `.gatekeeper.lock`; the entire `GatekeeperV22.request()` normal path, including signed auth, nonce check, ticket-scope binding, local core operation and result persistence, runs under the new lock. State/Core locks remain separate inside. This also prevents a cooperating scoped read from overtaking an in-progress ticket creation. No encryption format, signature or role policy was changed; original historical files remain untouched.
+
+**Acceptance:** independent Gatekeeper instances share a synthetic storage root; a deliberately delayed first write receives a parallel same-key retry; one operation executes and the other receives the identical cached result. Sequential same-key retry, payload mismatch, reused nonce, and different-scope `EXTERNAL_ACK` denial/own-scope success are covered. [Candidate CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234410661) passed 26 unit tests plus nine self-tests on both versions. This validates cooperating file-lock behavior on Linux runners, not crash recovery or all platforms.
+
+**Remaining gap and revisit:** this is *not* a single crash-atomic transaction across two encrypted state files. A hard termination after `core.handle` but before scope binding or cached result persistence can leave an orphan scoped ticket or duplicate the action on a retry; even under the process-shared lock a fresh process cannot infer the missing receipt. Investigate a durable intent/commit marker or core-level transaction link with safe migration and crash injection before claiming exactly-once semantics. Non-cooperating direct core writers bypass the request lock. Reads serialize as a deliberate safety/throughput trade-off; revisit if profiling shows an actual bottleneck.
 
 ## Decision: stage and roll back directory restoration (2026-11-06)
 
