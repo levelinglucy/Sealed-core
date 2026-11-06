@@ -140,8 +140,11 @@ class GatekeeperHardExitTests(unittest.TestCase):
         gate = self._assert_persisted_pending()
         try:
             self.assertEqual(
-                gate.request(self._fresh_retry()),
-                {"ok": False, "error": "OPERATION_OUTCOME_UNKNOWN"},
+                gate.request(self._fresh_retry())["data"]["ticket_id"],
+                before[0],
+            )
+            self.assertEqual(
+                gate.state.ticket_scope(before[0]), "alpha"
             )
         finally:
             gate.close()
