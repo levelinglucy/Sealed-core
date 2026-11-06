@@ -2,10 +2,11 @@
 
 ## Development summary
 
-**Current stage:** untagged file-restore integrity candidate for the existing local-only v2.2 modular stack.  
+**Current stage:** file-restore integrity candidate merged on main at `385c4cd0` (PR #2), without a stable tag or release.  
 **Goal:** make corrupt, absent or failed-to-authenticate vault data incapable of truncating an existing restored file.  
 **Latest change:** staged authenticated restoration with private sibling temp files, `os.replace()` for requested overwrite and exclusive `os.link()` for new files.  
-**Next:** verify CI; harden `restore_directory()` overwrite safely; investigate gatekeeper idempotency consistency across process crashes and concurrent requests.  
+**Validation:** 12/12 unittest cases and nine core self-tests passed in both PR and merged-main CI, Python 3.12. [PR run](https://github.com/levelinglucy/Sealed-core/actions/runs/42217418606) · [merged-main run](https://github.com/levelinglucy/Sealed-core/actions/runs/42217565879).  
+**Next:** harden `restore_directory()` overwrite safely; investigate gatekeeper idempotency consistency across process crashes and concurrent requests.  
 **Blockers:** directory overwrite still destructive prior to archive validation; power-loss and iPhone/Pythonista filesystems untested; no verified tagged stable release.  
 [README](./README.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
 
