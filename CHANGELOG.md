@@ -1,5 +1,18 @@
 # Sealed-core changelog
 
+
+## Draft candidate — fail-closed uncertain Gatekeeper outcomes (2026-11-06; PR #8; not merged)
+
+**Components:** `gatekeeper_v2_2.py`, `tests/test_gatekeeper_idempotency.py`, README, developer notes, roadmap and `GATEKEEPER_RECOVERY.md`.
+
+**Before:** a core commit that succeeded shortly before ticket-scope binding or idempotency receipt storage could lack a cached result. A later signed retry using the same business key with a new nonce executed the write a second time. Synthetic tests for both interrupted windows and pending-entry eviction were first committed as `9b53f0bb`; on Python 3.11 and 3.12, [expected-red CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42242913268) confirmed three failures.
+
+**Draft change:** durably reserve each keyed operation as `PENDING` together with its nonce before executing it; a matching retry with no completed receipt returns `OPERATION_OUTCOME_UNKNOWN` instead of re-executing. Keep pending records during bounded cache pruning; reject new keyed operations rather than evict pending entries at full capacity; continue to replay historical completed receipts without migration. The code candidate `e389bdb4` passed 29/29 Python unit tests and nine core self-tests on each of Python 3.11 and 3.12 ([CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42243006070)). Additional synthetic capacity/precommit/legacy-compatibility tests and detailed recovery documentation followed; refer to the latest PR head for their validation.
+
+**Compatibility:** no new public action, role, signature, network listener or encrypted envelope schema. The retry contract changes: uncertain operations are deliberately blocked pending manual reconciliation, even if no write occurred. A rollback to a previous Gatekeeper version with pending records may permit duplicates; do not automatically deploy older code against this state.
+
+**Known limitations:** this is a **reviewable candidate only**, not a merged fix, stable release, or crash-atomic transaction. No audited operator reconciliation workflow exists. Power-cut/fault injection on iPhone, hard-kill recovery, external direct-core writes, indefinitely retained completed receipts, and portable lock semantics remain unverified. Details in [engineering decision](./DEV_NOTES.md) and [recovery guide](./GATEKEEPER_RECOVERY.md).
+
 ## Merged integrated candidate — concurrent Gatekeeper idempotency (2026-11-06; PR #6)
 
 **Components:** `gatekeeper_v2_2.py`, `tests/test_gatekeeper_idempotency.py` and developer documentation.
