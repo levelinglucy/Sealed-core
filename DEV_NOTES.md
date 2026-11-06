@@ -2,14 +2,26 @@
 
 ## Development summary
 
-**Stage:** Gatekeeper crash-window fail-closed candidate on [draft PR #8](https://github.com/levelinglucy/Sealed-core/pull/8), **not merged or stable**; earlier concurrent-write and file/directory restore repairs integrated on main.
-**Goal:** avoid blind duplicate effects when a signed keyed local write has no cached receipt following interruption.
-**Latest:** a persisted `PENDING` reservation is created with the nonce *before* core execution. Matching signed retries receive `OPERATION_OUTCOME_UNKNOWN`; a completed receipt, including preexisting v2.2 records, still replays unchanged. Pruning preserves uncertain entries.
-**Evidence:** three synthetic tests were first red on [baseline CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42242913268) (both Python 3.11 and 3.12); the initial repair passed 29/29 Python unit tests and 9/9 self-tests per Python version on [candidate CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42243006070). Expanded compatibility, capacity and two subprocess `os._exit` cases now pass [34/34 Python unit + 9/9 core self-tests per version](https://github.com/levelinglucy/Sealed-core/actions/runs/42252218491) on Python 3.11/3.12 at `be1e8ae1`. This tests process exit, not OS crash/power loss.
-**Next:** design owner-local read-only pending inspection and an audited reconciliation protocol tied to a durable core operation ID; keep mutation/rollback out of scope until ambiguity is resolvable. Target-device checks still outstanding.
-**Limits:** unknown result may mean no operation ran, or one committed. No safe automated reconciliation, no complete crash atomicity or indefinite completed-receipt retention; switching back to old code with pending entries may re-enable duplicates. All earlier directory power-loss and mobile constraints remain.
+**Stage:** local-only Gatekeeper v2.2 [PR #8](https://github.com/levelinglucy/Sealed-core/pull/8), **draft, unmerged**, stable release blocked by legacy/non-ticket reconciliation and device/power-loss evidence.
+**Current milestone:** link signed NEW_TICKET to the core-atomic operation receipt and safely recover exact committed tickets.
+**Latest:** encrypted PENDING ID from authenticated signed request now enters `SealedCore.handle_with_gatekeeper_operation()`; signed matching-key retries reconstruct a core-proven receipt and matching ticket scope. No duplicate ticket on after-commit interruption. Missing, legacy or mismatched core proof fails closed, including changed scope.
+**Evidence:** [CI 42280404380](https://github.com/levelinglucy/Sealed-core/actions/runs/42280404380) passed 48/48 Python unit tests plus nine core self-tests **on each** Python 3.11/3.12, including synthetic separate-interpreter `os._exit` tests.
+**Next:** owner-only audited reconciliation for *unlinked* pending and non-ticket writes; crash/power cut + Pythonista tests; compatible rollback evaluation.
+**Limits:** no general exactly-once guarantee, no safe blind retry on missing receipt, no signed recovery endpoint; cross-file state and filesystem writes are not atomic. Tests are synthetic Linux CI, not trusted iPhone or power-cut evidence.
 
 [README](./README.md) · [Recovery guide](./GATEKEEPER_RECOVERY.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
+
+## Decision: use core-proven signed ticket replay; preserve fail-closed uncertainty (2026-11-06; draft PR #8)
+
+**Problem / previous behaviour:** the experimental core receipt existed, but signed Gatekeeper `NEW_TICKET` still invoked `core.handle()`, leaving actual PENDING IDs unlinked. A crash after creating the ticket but before Gatekeeper's separate ticket-scope/receipt writes could strand a valid signed retry. Matching ticket fields are not sufficient proof.
+
+**Alternatives:** a new recovery command that resets PENDING without proof (unsafe); infer success from subject/timestamp (ambiguous); persist another separate receipt after commit (still vulnerable to interruption); or use the existing encrypted core-atomic ticket/receipt primitive and only recover exact signed identity (chosen).
+
+**Change:** `GatekeeperState.consume_nonce_and_check_idempotency()` returns the persisted random operation ID and whether an existing reservation was found after verifying a fresh signed nonce and matching request hash. `_authenticate()` supplies it only after role and HMAC checks. First `NEW_TICKET` invokes the core's atomic method with that ID, verified request hash and registry-derived scope. A signed matching-key retry of an existing PENDING entry performs a read-only exact core lookup. If found, it restores the matching local scope binding and Gatekeeper result, with no ticket reexecution. Binding refuses conflicting scope changes. Other write actions continue to fail closed on uncertain outcomes; unsigned/incorrectly signed requests never reach lookup.
+
+**Trade-offs:** this adds a small authenticated recovery path but retains two encrypted state files. It narrows ambiguity only for *new, linked* ticket operations; missing receipt, older unlinked markers, changed scope, and inaccessible/corrupt core remain unknown. The operation ID alone is not authority, a Core `get_*` lookup is not an authentication endpoint, and no automatic pending clear is allowed without exact core evidence. All linked receipts and encrypted original data must survive source rollback; older binaries that ignore PENDING remain unsafe. Records currently grow without pruning, bounded only by ordinary state resource limits.
+
+**Evidence:** five additional signed recovery tests cover exact persisted receipt, identity/scope changes, mismatch, legacy and HMAC rejection. Existing hard-exit and postcommit failure tests were updated to require successful recovery, while precommit ambiguity remains blocked. [Exact code-head CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42280404380): 48 unit + nine core self-tests per Python version (3.11 and 3.12). Revisit if trusted device testing, owner recovery needs, or independent direct-core writers expose unmet invariants.
 
 ## Decision: add an atomic core-side NEW_TICKET receipt before Gatekeeper integration (2026-11-06; draft PR #8)
 

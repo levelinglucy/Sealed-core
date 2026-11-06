@@ -1,50 +1,39 @@
 # Gatekeeper uncertain-outcome recovery (draft candidate)
 
-**Status:** local-only Gatekeeper v2.2 proposal in [PR #8](https://github.com/levelinglucy/Sealed-core/pull/8), **not merged or released**. This document describes the proposed `PENDING` idempotency reservation, not behavior in the current stable baseline.
+**Status:** [PR #8](https://github.com/levelinglucy/Sealed-core/pull/8) is a local-only development candidate, **not merged or released**. Its *linked* signed NEW_TICKET behaviour is different from the stable main branch. Read this before retrying.
 
-## What the response means
+## Meaning of a pending outcome
 
-`{"ok": false, "error": "OPERATION_OUTCOME_UNKNOWN"}` means a valid, freshly signed retry matched an earlier idempotency key for which the Gatekeeper has an encrypted **pending reservation but no committed reply**. The earlier request might have failed **before** any side effect, or it might have committed in Sealed Core, mutated an output directory, or bound a ticket scope before interruption. Gatekeeper cannot distinguish those cases using its two independent encrypted state files.
+A valid, freshly signed same-key NEW_TICKET retry can now return the original receipt **only when** the Gatekeeper's encrypted PENDING ID, verified request hash and current authorized registry scope exactly match a core operation receipt committed atomically with that ticket. It then restores the matching ticket scope binding and completed Gatekeeper receipt. A missing receipt, mismatch or legacy unlinked PENDING record still returns `OPERATION_OUTCOME_UNKNOWN`; that **does not** prove an operation did not execute.
 
-Do **not** automatically submit the operation again under a different idempotency key. That can duplicate tickets, vault objects or external filesystem changes. Do **not** delete, truncate or hand-edit `gatekeeper_state.json` or `state.json` to clear the error; either can be the only surviving evidence of an interrupted operation.
+Non-ticket writes (ACK/CLOSE, vault sealing, unsealing, directory restores) continue to return `OPERATION_OUTCOME_UNKNOWN` after interruption because their filesystem/core side effects are not linked to an atomic operation map. A new idempotency key is a *new operation*, not a safe retry.
 
-## Safe response for an operator
+Never delete or hand-edit `gatekeeper_state.json` or encrypted `state.json`. Do not downgrade to older code that ignores PENDING or linked core receipts and then retry, as duplicate side effects can result. Save offline backups of both encrypted stores before any owner review; keep the original host binding.
 
-1. Stop automatic retries for the affected business operation and record its principal, action, key, payload identity, approximate time, and the redacted error response. Never record signing secrets.
-2. Keep copies/backups of the original encrypted files and relevant local-only audit context before recovery work. Respect file permissions and retain the original machine binding.
-3. Using authorized owner-local tools, inspect the actual Sealed Core state and any specific output path for evidence of a completed action. A similar-looking ticket is **not** proof it is the matching request; the core currently lacks a durable Gatekeeper operation identifier.
-4. If an outcome remains uncertain, leave the pending reservation in place and treat the action as requiring human reconciliation, not a blind retry. The current candidate intentionally has **no automatic reset/repair endpoint**.
-5. For a known-uncommitted operation, a new signed request with a new idempotency key is a deliberate *new* operation and must be approved through the caller's normal operational controls. This is not the same as proving a replay was safe.
+## Evidence and owner-local inspection
 
-An orphan ticket can exist in the core but remain invisible to an external acknowledger when scope binding failed; the owner must inspect it locally. Do not guess or invent a scope binding. No new remotely exposed interface is introduced.
+`inspect_pending_local(storage_dir)` is a read-only Python helper requiring the local owner secret. It exposes only a hashed compound key reference, request hash, timestamp, PENDING status and optional random operation ID; no raw signed payloads, keys, nonces or secrets. It is **not** a signed action, network endpoint, permission to clear PENDING or an automatic repair API.
 
-## Read-only owner-local pending inspection (draft candidate)
-
-The draft provides a **local Python helper**, not a signed Gatekeeper action, API endpoint, recovery button or authorisation to restart a write. With \`SEALED_OWNER_SECRET\` set on the trusted machine, an owner may inspect only the redacted pending records:
-
-\`\`\`python
+```python
 from gatekeeper_v2_2 import inspect_pending_local
-records = inspect_pending_local("sealed_storage")  # use the actual local store path
-for item in records:
+for item in inspect_pending_local("sealed_storage"):  # trusted local host only
     print(item)
-\`\`\`
+```
 
-Each record includes \`key_ref_sha256\` (the SHA-256 of the existing \`principal_id:idempotency_key\` string), \`request_hash\`, \`created_at\`, \`status\`, and an optional random \`operation_id\`. It does **not** return raw business keys, principal IDs, nonces, signed payloads or secrets. Legacy pending markers show \`operation_id: None\`. A newly generated operation ID is **currently only in Gatekeeper's store**: neither its presence nor absence proves a core mutation, and it is **not a reconciliation key yet**. Do not automatically clear any marker, including apparently old ones. Inspect on a trusted, owner-controlled device and avoid publishing the diagnostics.
+A new linked ticket's operation ID is present in both encrypted stores only after the core transaction commits. The core's `get_gatekeeper_ticket_receipt()` validates exact ID/hash/scope without mutation, but does not independently authenticate callers. The **Gatekeeper's HMAC, nonce, role and registry-scope validation must happen first**. Operation IDs on their own are not a proof of execution or entitlement, and a missing core record must not be used to reset state.
 
-## Experimental core-side receipt (not connected to Gatekeeper yet)
+## Owner response when outcome is still unknown
 
-The current draft branch has an **opt-in** `SealedCore.handle_with_gatekeeper_operation()` primitive. When invoked explicitly with an opaque 128-bit hex operation ID, signed-request business hash and authorized scope, it stores the exact NEW_TICKET reply in the *same encrypted core transaction* as the ticket, metric and intents. `get_gatekeeper_ticket_receipt()` performs an exact ID/hash/scope lookup without mutation. Synthetic process termination tests and persisted-state readback passed [code-head CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42270761333) on Python 3.11/3.12.
+1. Stop automatic retries of the affected business action and preserve the original principal, action, idempotency-key reference, request business identity, local timestamps and redacted error, **not** signing secrets.
+2. Back up the encrypted Gatekeeper and core state, relevant vault/file outputs and local recovery metadata. Avoid copying decrypted information to logs.
+3. Use trusted owner-local inspection to determine whether there is exact core-linked evidence; never infer from a similar-looking ticket or an old unlinked ID. If scope changed, resolve the principal registry discrepancy offline; don't bind a ticket to a new scope.
+4. For unlinked/legacy/non-ticket operations or ambiguous evidence, **leave PENDING intact** and seek deliberate owner reconciliation; no automatic reset or manual deletion is provided.
+5. For a genuinely new business request, use a different key only under normal owner controls; it is not automatic recovery of the earlier request.
 
-**Crucial:** the signed Gatekeeper request flow **still calls the existing `core.handle()`**, so today's PENDING operation IDs are **not linked** to these core receipts. A missing core receipt cannot justify clearing an actual PENDING record. Older tickets have no operation map. This experimental helper must not be used as an owner authorization shortcut or an automated recovery command; signed principal and scope binding have not been integrated. All earlier fail-closed handling above remains in effect. No stable merge/release or power-loss/device claim.
+A ticket may have committed before its external-ack scope binding and be temporarily invisible to external acknowledgers. A matching signed ticket retry restores that binding only with exact atomic core evidence and matching scope; other scopes remain forbidden.
 
-## Compatibility and rollback cautions
+## Rollback, validation and limits
 
-The candidate extends existing encrypted Gatekeeper state values with `status: PENDING` before execution and `status: COMMITTED` after receipt storage. Old completed entries with only `result` remain valid. The envelope schema, secrets and signatures are unchanged. The number of stored idempotency entries is bounded. Pending entries are retained in preference to completed entries; exhausted pending capacity rejects new keyed requests with `IDEMPOTENCY_CAPACITY_REACHED` rather than discarding uncertain operations. Older completed receipts may still age out of this bounded cache.
+The draft adds an encrypted `PENDING` reservation and core operation ledger, while preserving old completed receipts without a status field. The completed cache remains bounded; PENDING entries are not silently pruned and can exhaust capacity. Historic unrelated direct `core.handle()` operations have no linked identity. Do not run earlier code against these stores expecting safe retry; code rollback is not state rollback.
 
-Rolling back the code to a version that *ignores* pending records can re-enable duplicate execution on retry. Therefore **do not treat an older binary as a safe recovery tool for a store containing pending entries**. Keep this candidate on a reviewable branch until operator reconciliation and a compatible rollback procedure are designed. Rollback of source code alone is not equivalent to safe rollback of state.
-
-## Validation and remaining work
-
-All current tests use fake secrets and temporary local storage. Synthetic exceptions after core commit and after scope binding reproduce the missing-receipt window. Before the repair, matching signed retries created a second ticket; test-only CI failed on Python 3.11 and 3.12 ([red baseline](https://github.com/levelinglucy/Sealed-core/actions/runs/42242913268)). Initial candidate checks passed 29 unit tests and nine self-tests on each version ([green CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42243006070)). Expanded compatibility, capacity and two real subprocess `os._exit` tests passed [34/34 unit cases and 9/9 core self-tests on each Python 3.11/3.12](https://github.com/levelinglucy/Sealed-core/actions/runs/42252218491) at commit `be1e8ae1`. One child stopped immediately after an actual synthetic core ticket commit and scope binding; the encrypted pending marker survived and the same-key retry did not create another ticket. A second child stopped after reservation but before core execution, also leaving a pending marker and no ticket.
-
-`os._exit` bypasses Python cleanup and lets the parent reopen encrypted state, but is **not** a power cut, OS crash, actual SIGKILL, or an end-to-end cross-filesystem durability test. A durable core-linked operation ledger and safe, audited resolution flow remain research milestones. Local-only access, ticket-scope boundaries, raw-data confidentiality and historical sources must remain intact.
+[Candidate code/test CI 42280404380](https://github.com/levelinglucy/Sealed-core/actions/runs/42280404380) passed **48/48 Python unit tests plus 9/9 self-tests on each Python 3.11 and 3.12**, using synthetic temporary stores, injected commit/receipt failures and child-interpreter `os._exit` after core commit and before execution. It is **not** a power-cut test, real SIGKILL test, trusted iPhone/Pythonista filesystem check, or proof of general exactly-once delivery. No new listener or external network access was added. The draft must remain reviewable until an audited owner-only recovery/rollback plan covers older PENDING, non-ticket writes and platform constraints.

@@ -28,11 +28,12 @@ v2.1 hardening added during reconstruction
 - best-effort key/state memory clearing;
 - built-in self-test.
 
-Draft development (2026-11-06): opt-in core-side NEW_TICKET operation receipts
-share one encrypted commit with ticket, metric and intents. Not yet connected
-to Gatekeeper's PENDING identifiers; see DEV_NOTES.md and draft PR #8.
-Next: connect authenticated signed request identity, scope and exact receipt,
-then test interrupted Gatekeeper recovery without clearing uncertain markers.
+Draft development (2026-11-06): authenticated signed NEW_TICKET requests
+now link persisted Gatekeeper PENDING IDs and registry scope to core-atomic
+ticket/metric/intent/receipt commits. Exact signed retries can reconstruct
+committed receipts; missing, changed-scope and old unlinked outcomes stay
+unknown. No general exactly-once guarantee or stable merge; see DEV_NOTES.md.
+Next: owner-only audited legacy/non-ticket reconciliation and device tests.
 
 No network code is present. Outbound actions are drafts stored as local intents.
 
@@ -674,8 +675,9 @@ class SealedCore:
     ) -> dict:
         """Create one ticket AND its recovery receipt in one encrypted commit.
 
-        This opt-in core primitive is intentionally NOT wired to Gatekeeper
-        yet. It does not clear any PENDING marker or change signed policy.
+        The draft Gatekeeper calls this only AFTER HMAC, role, nonce and
+        idempotency checks. This core method itself is not authentication or
+        permission to clear arbitrary PENDING records.
         """
         self._validate_gatekeeper_operation(operation_id, request_hash, scope_id)
         with self.store.transaction():

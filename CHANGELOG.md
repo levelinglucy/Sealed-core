@@ -1,5 +1,17 @@
 # Sealed-core changelog
 
+## Draft signed ticket evidence recovery (2026-11-06; PR #8, unmerged)
+
+**Affected:** `gatekeeper_v2_2.py`, existing interrupted Gatekeeper tests, new `tests/test_gatekeeper_linked_recovery.py`, `sealed_core.py` development header, README, recovery guide, roadmap and developer decisions. Earlier core primitive remains in the draft branch.
+
+**Previous:** PENDING reservations and core's atomic ticket receipts were separate and unlinked by actual signed Gatekeeper requests. If the ticket committed but Gatekeeper failed before recording scope/receipt, all same-key retries remained unknown.
+
+**Change / reason:** link the already-signed business identity and registry scope to the persisted random operation ID in the core ticket transaction. On a newly signed same-key retry, recover only an exact core receipt; bind the matching scope if needed, reject conflicting bindings, and persist the original redacted Gatekeeper result without a second ticket. No change to signature format, network surface, existing completed receipt replay or local-only design. Non-ticket, precommit, legacy and mismatched pending outcomes still fail closed. Tests were corrected from expecting indefinite uncertainty *after a core-proven commit* to expecting proven recovery; a new signed suite verifies scope/HMAC/ID failures.
+
+**Validation:** [GitHub Actions run 42280404380](https://github.com/levelinglucy/Sealed-core/actions/runs/42280404380), at [code/test commit 2f5798c8](https://github.com/levelinglucy/Sealed-core/commit/2f5798c88ebfddaa610dfddf1f77982868312480): **48/48 Python unit tests + 9/9 core self-tests on each of Python 3.11 and 3.12**. Exact docs-followup revision requires its own final check. No trusted Pythonista/iPhone or power-failure testing.
+
+**Limits and rollback:** still a draft, not merged or stable. Only new atomic-linked `NEW_TICKET` operations can recover; older pending IDs and other file/vault operations need owner-only reconciliation; a missing core receipt is not proof of failure. Downgrading to an implementation that ignores PENDING or the core operation map can cause duplicate side effects. Preserve encrypted stores and the code/PR until compatible recovery/rollback exists. Do not claim general exactly-once delivery.
+
 ## Draft core-side atomic ticket receipt candidate (2026-11-06; PR #8, unmerged)
 
 **Components:** `sealed_core.py`, `tests/test_core_gatekeeper_operation.py`, README, engineering notes and roadmap. **Before:** a PENDING reservation had an opaque Gatekeeper-only ID with no independently verifiable corresponding core transaction; a separate receipt write would leave the same crash window.
