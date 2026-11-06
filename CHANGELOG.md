@@ -1,6 +1,14 @@
 # Sealed-core changelog
 
 
+## Draft preparatory step — redacted owner-local PENDING inspection (2026-11-06; PR #8; unmerged)
+
+**Components:** \`gatekeeper_v2_2.py\`, \`tests/test_gatekeeper_inspection.py\`, README, developer decisions, recovery guide and roadmap. **Before:** a pending marker could prevent duplicate execution but offered no local diagnostic beyond manually inspecting its encrypted state, and had no dedicated correlation identifier. No one could infer the exact core commit from that marker.
+
+**Change:** add an opaque random ID to new encrypted PENDING reservations and preserve it on completion; provide a read-only local owner-secret helper that fingerprints the business-key reference and returns only the request hash, time, status and optional ID. It is *not* a policy action, network service or automatic reset facility. Historical pending records without IDs still appear as unlinked; completed receipts are omitted from the diagnostic. No core schema or transaction code changed.
+
+**Why this limited approach:** it creates a traceable future linkage point and allows safe inspection without guessing from similar ticket details. A durable core commit mapping, owner-controlled reconciliation and safe downgrade remain unimplemented. The correlation ID is **not yet written to core** and alone proves nothing. The change is reviewable only; do not merge or publish as a release without validation of final head and a comprehensive recovery plan. New synthetic regression checks cover read-only operation, output redaction, stable IDs, legacy entries and API non-exposure; exact CI status is to be recorded after completion.
+
 ## Draft test expansion — hard process-exit recovery checks (2026-11-06; PR #8; not merged)
 
 **Components:** new `tests/test_gatekeeper_hard_exit.py` plus README, developer notes, recovery guide and roadmap. **Why:** previously only injected Python exceptions tested the gap after a core commit; these still run cleanup and do not represent a terminated interpreter.
