@@ -714,6 +714,71 @@ def inspect_pending_local(storage_dir: str = DEFAULT_STORAGE_DIR) -> list[dict]:
         state.close()
 
 
+
+def inspect_pending_evidence_local(storage_dir: str = DEFAULT_STORAGE_DIR) -> list[dict]:
+    """Owner-local, read-only triage of PENDING against one encrypted core snapshot.
+
+    This does not authenticate a fresh business request or verify the current
+    principal registry scope. Even a matching atomic receipt is *not* authority
+    to clear a marker, grant ticket access, or retry an uncertain write.
+    No signing key, original principal, business key, scope or ticket is output.
+    """
+    owner_secret = os.environ.get("SEALED_OWNER_SECRET")
+    if not owner_secret:
+        raise RuntimeError("SEALED_OWNER_SECRET environment variable required")
+    state = GatekeeperState(owner_secret, storage_dir=storage_dir)
+    try:
+        # Match the ordinary signed request's lock order. Take the core state
+        # from one authenticated generation so multiple pending rows are not
+        # compared to different core snapshots.
+        with _StoreFileLock(state.request_lock_path):
+            pending = state.list_pending_local()
+            if not pending:
+                return []
+            with SealedCore(owner_secret, mode="OWNER",
+                            storage_dir=storage_dir) as core:
+                with _StoreFileLock(core.store.lock_path):
+                    snapshot = core.store._load_state_locked()
+
+            operations = snapshot.get("gatekeeper_ticket_operations", {})
+            tickets = snapshot.get("tickets", {})
+            for item in pending:
+                operation_id = item.get("operation_id")
+                if operation_id is None:
+                    evidence = "LEGACY_UNLINKED_UNKNOWN"
+                elif (not isinstance(operation_id, str)
+                      or re.fullmatch(r"[0-9a-f]{32}", operation_id) is None):
+                    evidence = "INVALID_ID_UNKNOWN"
+                else:
+                    record = operations.get(operation_id)
+                    if record is None:
+                        evidence = "NO_CORE_RECEIPT_UNKNOWN"
+                    elif (not isinstance(record, dict)
+                          or record.get("kind") != "NEW_TICKET"
+                          or record.get("request_hash") != item["request_hash"]
+                          or not isinstance(record.get("scope_id"), str)
+                          or not record["scope_id"]):
+                        evidence = "CORE_RECEIPT_CONFLICT"
+                    else:
+                        receipt = record.get("receipt")
+                        ticket_id = (receipt.get("ticket_id")
+                                     if isinstance(receipt, dict) else None)
+                        ticket = (tickets.get(ticket_id)
+                                  if isinstance(ticket_id, str) else None)
+                        if (not isinstance(ticket, dict)
+                            or ticket.get("ticket_id") != ticket_id
+                            or ticket.get("route") != receipt.get("route")):
+                            evidence = "CORE_RECEIPT_INCOMPLETE"
+                        else:
+                            evidence = "CORE_TICKET_RECEIPT_PRESENT"
+                item["core_evidence"] = evidence
+                item["authorizes_retry_or_clear"] = False
+                item["current_scope_verified"] = False
+            return pending
+    finally:
+        state.close()
+
+
 def gatekeeper_request(request: dict, storage_dir: str = DEFAULT_STORAGE_DIR) -> dict:
     gate = GatekeeperV22(storage_dir=storage_dir)
     try:
