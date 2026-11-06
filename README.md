@@ -14,7 +14,9 @@
 
 **Latest downgrade evidence (2026-11-06):** a pinned copy of old merged main (`6f6e9c67`) executed the same signed NEW_TICKET retry on disposable copies of synthetic encrypted PENDING stores. With a ticket already committed, old code **created a second ticket** (1 → 2); when the first write had not run, it executed anyway (0 → 1). Original encrypted stores and a synthetic output file stayed byte-identical. The two new tests passed in [CI 42296125471](https://github.com/levelinglucy/Sealed-core/actions/runs/42296125471) on Python 3.11 and 3.12 (55/55 unit tests plus nine self-tests per version). This shows a source-only downgrade is dangerous, **not** that a live migration is safe.
 
-**Next:** design owner-reviewed reconciliation for unlinked/legacy reservations and non-ticket filesystem side effects; keep failing closed when evidence is missing. Preserve matching backups of both encrypted stores, code, vault and outputs; do not use older binaries to retry pending writes. Test power-loss/device durability before stable promotion.
+**New provenance limit (2026-11-06):** two signed synthetic `CLOSE_TICKET` histories (precommit interruption versus real core execution followed by lost Gatekeeper receipt) left the same terminal `CLOSED` status and `NO_CORE_RECEIPT_UNKNOWN` PENDING evidence. [Code-head CI 42304466288](https://github.com/levelinglucy/Sealed-core/actions/runs/42304466288) passed 56/56 unit tests plus nine core self-tests on each Python 3.11 and 3.12. This **disproves status-only owner reconciliation**; no reset API or signed surface was added. The draft remains unmerged.
+
+**Next:** park legacy/non-ticket recovery until per-action attributable durable receipts or separately verified evidence can support an auditable protocol; keep failing closed when evidence is missing. Preserve matching backups of both encrypted stores, code, vault and outputs; do not use older binaries to retry pending writes. Test power-loss/device durability before stable promotion.
 
 [Uncertain-outcome recovery notes](./GATEKEEPER_RECOVERY.md) · [Changelog](./CHANGELOG.md) · [Engineering decisions](./DEV_NOTES.md) · [Roadmap](./ROADMAP.md)
 
