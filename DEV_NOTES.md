@@ -2,11 +2,11 @@
 
 ## Development summary
 
-**Stage:** local-only v2.2 Gatekeeper idempotency transaction candidate in [PR #6](https://github.com/levelinglucy/Sealed-core/pull/6), after integrated file and directory recovery candidates; no stable tag.
+**Stage:** local-only v2.2 Gatekeeper idempotency transaction candidate [PR #6](https://github.com/levelinglucy/Sealed-core/pull/6) merged at [`9396f067`](https://github.com/levelinglucy/Sealed-core/commit/9396f067bf403fde4678850e7f69588437fb626e), after integrated file and directory recovery candidates; no stable tag.
 **Goal:** signed concurrent retries should not execute the same side effect twice while local cooperating Gatekeeper callers are running.
 **Latest:** first reproduced duplicate side effects under parallel same-key, distinct-nonce requests in [unpatched PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234112137). Added cross-process request serialization over authentication, core action and cached result. Tests also exercise nonce replay, changed-payload key collision and real ticket scope isolation.
-**Evidence:** 26/26 tests and 9/9 core self-tests passed in [candidate CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234410661) on each of Python 3.11 and 3.12. Main-branch CI and final merge status must be verified separately.
-**Next:** validate merged revision; investigate crash interruption between core and Gatekeeper state; trusted Pythonista/device checks.
+**Evidence:** 26/26 tests and 9/9 core self-tests passed in [final PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234685983) and [merged-main CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234765405) on each of Python 3.11 and 3.12.
+**Next:** investigate crash interruption between core and Gatekeeper state; trusted Pythonista/device checks.
 **Limits:** operations are serialized through a local file lock, reducing simultaneous read throughput; a process crash after a side effect but before recording the receipt remains an unclosed exactly-once gap. Separate core writers, mobile file locking and power-loss behavior not proven.
 
 [README](./README.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
@@ -19,7 +19,7 @@
 
 **Implementation:** `GatekeeperState.request_lock_path` is distinct from `.gatekeeper.lock`; the entire `GatekeeperV22.request()` normal path, including signed auth, nonce check, ticket-scope binding, local core operation and result persistence, runs under the new lock. State/Core locks remain separate inside. This also prevents a cooperating scoped read from overtaking an in-progress ticket creation. No encryption format, signature or role policy was changed; original historical files remain untouched.
 
-**Acceptance:** independent Gatekeeper instances share a synthetic storage root; a deliberately delayed first write receives a parallel same-key retry; one operation executes and the other receives the identical cached result. Sequential same-key retry, payload mismatch, reused nonce, and different-scope `EXTERNAL_ACK` denial/own-scope success are covered. [Candidate CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234410661) passed 26 unit tests plus nine self-tests on both versions. This validates cooperating file-lock behavior on Linux runners, not crash recovery or all platforms.
+**Acceptance:** independent Gatekeeper instances share a synthetic storage root; a deliberately delayed first write receives a parallel same-key retry; one operation executes and the other receives the identical cached result. Sequential same-key retry, payload mismatch, reused nonce, and different-scope `EXTERNAL_ACK` denial/own-scope success are covered. [Final merged-main CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234765405) passed 26 unit tests plus nine self-tests on both versions. This validates cooperating file-lock behavior on Linux runners, not crash recovery or all platforms.
 
 **Remaining gap and revisit:** this is *not* a single crash-atomic transaction across two encrypted state files. A hard termination after `core.handle` but before scope binding or cached result persistence can leave an orphan scoped ticket or duplicate the action on a retry; even under the process-shared lock a fresh process cannot infer the missing receipt. Investigate a durable intent/commit marker or core-level transaction link with safe migration and crash injection before claiming exactly-once semantics. Non-cooperating direct core writers bypass the request lock. Reads serialize as a deliberate safety/throughput trade-off; revisit if profiling shows an actual bottleneck.
 
