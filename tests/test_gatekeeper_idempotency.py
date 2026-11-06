@@ -286,5 +286,58 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
         self.assertLessEqual(len(state["idempotency"]), 3)
 
 
+    def test_precommit_error_is_conservatively_uncertain(self):
+        """Without a core-linked commit marker, even no-op failure is ambiguous."""
+        invocations = []
+        def interrupted_execute(*_args):
+            invocations.append(1)
+            raise RuntimeError("synthetic precommit error")
+        self.gate_one._execute = interrupted_execute
+        self.gate_two._execute = interrupted_execute
+
+        first = self.signed(
+            "NEW_TICKET", "precommit-key-000001", "precommit-nonce-0001",
+            {"subject": "precommit"},
+        )
+        second = self.signed(
+            "NEW_TICKET", "precommit-key-000001", "precommit-nonce-0002",
+            {"subject": "precommit"},
+        )
+        self.assertEqual(
+            self.gate_one.request(first), {"ok": False, "error": "INTERNAL_ERROR"}
+        )
+        self.assertEqual(
+            self.gate_two.request(second),
+            {"ok": False, "error": "OPERATION_OUTCOME_UNKNOWN"},
+        )
+        self.assertEqual(len(invocations), 1)
+
+    def test_pending_capacity_exhaustion_rejects_fresh_write(self):
+        """Never delete uncertain reservations to admit another local write."""
+        self.gate_one._execute = lambda *_: (_ for _ in ()).throw(
+            RuntimeError("synthetic interrupted write")
+        )
+        self.gate_two._execute = lambda *_: {"unexpected": "executed"}
+        with patch("gatekeeper_v2_2.MAX_IDEMPOTENCY", 1):
+            self.assertEqual(
+                self.gate_one.request(self.signed(
+                    "NEW_TICKET", "capacity-key-00001", "capacity-nonce-000001"
+                ))["error"],
+                "INTERNAL_ERROR",
+            )
+            self.assertEqual(
+                self.gate_two.request(self.signed(
+                    "NEW_TICKET", "capacity-key-00002", "capacity-nonce-000002"
+                ))["error"],
+                "IDEMPOTENCY_CAPACITY_REACHED",
+            )
+            self.assertEqual(
+                self.gate_two.request(self.signed(
+                    "NEW_TICKET", "capacity-key-00001", "capacity-nonce-000003"
+                ))["error"],
+                "OPERATION_OUTCOME_UNKNOWN",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
