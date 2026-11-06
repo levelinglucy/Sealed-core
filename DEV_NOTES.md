@@ -3,13 +3,25 @@
 ## Development summary
 
 **Stage:** local-only Gatekeeper v2.2 [PR #8](https://github.com/levelinglucy/Sealed-core/pull/8), **draft, unmerged**, stable release blocked by legacy/non-ticket reconciliation and device/power-loss evidence.
-**Current milestone:** link signed NEW_TICKET to the core-atomic operation receipt and safely recover exact committed tickets.
-**Latest:** encrypted PENDING ID from authenticated signed request now enters `SealedCore.handle_with_gatekeeper_operation()`; signed matching-key retries reconstruct a core-proven receipt and matching ticket scope. No duplicate ticket on after-commit interruption. Missing, legacy or mismatched core proof fails closed, including changed scope.
-**Evidence:** [final CI 42288153350](https://github.com/levelinglucy/Sealed-core/actions/runs/42288153350) passed 53/53 Python unit tests plus nine core self-tests **on each** Python 3.11/3.12, including synthetic separate-interpreter `os._exit` tests.
-**Next:** owner-only audited reconciliation for *unlinked* pending and non-ticket writes; crash/power cut + Pythonista tests; compatible rollback evaluation.
+**Current milestone:** evidence-based downgrade/reconciliation safety; signed linked-ticket recovery is implemented on the draft branch, not released.
+**Latest:** pinned pre-PR main source (`6f6e9c67`) was run only on copied synthetic encrypted stores. It ignored a PENDING marker and reexecuted a proven committed ticket request, producing **two** tickets instead of one; a precommit PENDING was also executed. The original encrypted bytes and representative output remained unchanged. No safe source-only downgrade exists while unresolved reservations remain.
+**Evidence:** [copy-rehearsal CI 42296125471](https://github.com/levelinglucy/Sealed-core/actions/runs/42296125471) passed 55/55 Python unit tests plus nine core self-tests **on each** Python 3.11/3.12. Two new regression tests executed real historical source in subprocesses, not mocked old behaviour. Final documentation head requires independent CI.
+**Next:** owner-reviewed evidence threshold/audit for *unlinked* pending and non-ticket writes; crash/power cut + Pythonista tests; do not merge/rollback until risks are acceptable.
 **Limits:** no general exactly-once guarantee, no safe blind retry on missing receipt, no signed recovery endpoint; cross-file state and filesystem writes are not atomic. Tests are synthetic Linux CI, not trusted iPhone or power-cut evidence.
 
 [README](./README.md) · [Recovery guide](./GATEKEEPER_RECOVERY.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
+
+## Decision: demonstrate unsafe old-code retries, rather than promising safe downgrade (2026-11-06; draft PR #8)
+
+**Problem:** the previous main Gatekeeper persisted neither a conservative PENDING block nor a core-linked recovery identity. A source-only revert after a draft transaction might silently repeat a committed business operation.
+
+**Alternatives:** static reasoning only (insufficient), live rollback (unacceptable data-loss exposure), embedding a fake old implementation (not authentic) or executing pinned real historical modules against disposable *copies* of synthetic encrypted stores (chosen). Tests require checkout with full Git history, load historical `gatekeeper_v2_2.py` and `sealed_core.py` into a separate interpreter, and never give old code the original synthetic storage path.
+
+**Observed:** a postcommit lost-receipt PENDING produced ticket count **1 → 2** when retried under old main; a precommit PENDING **0 → 1** was also treated as executable. CI Python 3.11/3.12: [run 42296125471](https://github.com/levelinglucy/Sealed-core/actions/runs/42296125471), 55/55 unit and nine core self-tests per version. Original encrypted files and synthetic output were byte-identical afterward. Historical source pinned to `6f6e9c67349934ed129a84edcc650219b2311675` to avoid an unannounced moving baseline.
+
+**Decision/trade-offs:** forbid live old-writer reuse while unresolved PENDING exists, preserve both encrypted stores and vault/output snapshots, and require owner-reviewed evidence before any future reconciliation. Full Git checkout adds CI fetch cost; local source archives without history skip the historical rehearsal. This does **not** prove real-disk power-loss durability, provide a safe general-purpose reset, or justify merging the draft.
+
+**Revisit if:** a compatible older-code guard or authenticated migration is developed and tested, or trusted device/power-loss evidence changes the risk. See [owner decision matrix](./GATEKEEPER_RECOVERY.md).
 
 ## Decision: add read-only owner-local cross-store triage, not a resolver (2026-11-06; draft PR #8)
 
