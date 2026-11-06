@@ -39,6 +39,26 @@ Every row explicitly reports `authorizes_retry_or_clear=False` and `current_scop
 
 A new linked ticket's operation ID is present in both encrypted stores only after the core transaction commits. The core's `get_gatekeeper_ticket_receipt()` validates exact ID/hash/scope without mutation, but does not independently authenticate callers. The **Gatekeeper's HMAC, nonce, role and registry-scope validation must happen first**. Operation IDs on their own are not a proof of execution or entitlement, and a missing core record must not be used to reset state.
 
+## Code-and-store downgrade rehearsal: an unsafe old writer (2026-11-06)
+
+A pinned historical main revision (`6f6e9c67349934ed129a84edcc650219b2311675`, before draft PR #8) treats a new encrypted `PENDING` entry without a completed `result` as an ordinary cache miss after authenticating the retry. In particular, it does **not** enforce the candidate's conservative pending block or core-linked recovery. This is a compatibility hazard, not a supported migration path.
+
+`tests/test_downgrade_rehearsal.py` runs that *actual pinned older Gatekeeper and core* in a **separate Python interpreter and disposable directory** against copies of two synthetic encrypted states. One contains an already-committed linked ticket with a lost Gatekeeper completion receipt; the other has a PENDING reservation from before core execution. Both include a representative synthetic output file. GitHub CI checks out history for this test; on source archives without Git history it skips. A test that uses a copy is not authorization to exercise the older writer on actual user data.
+
+**Owner decision / rollback matrix**
+
+| Observed evidence | Permitted conservative response | Not permitted by this candidate |
+| --- | --- | --- |
+| `CORE_TICKET_RECEIPT_PRESENT` and freshly authenticated matching principal/scope | Use *candidate* Gatekeeper signed same-key ticket recovery, then verify receipt and scope | Old-code retry, manual PENDING clear, scope substitution |
+| `NO_CORE_RECEIPT_UNKNOWN`, `LEGACY_UNLINKED_UNKNOWN` or `INVALID_ID_UNKNOWN` | Preserve PENDING, gather external outcome evidence in an offline owner review | Treat missing core evidence as proof of nonexecution |
+| `CORE_RECEIPT_CONFLICT` / `CORE_RECEIPT_INCOMPLETE` or invalid envelope | Stop writes; preserve encrypted stores/output snapshot and investigate on copies | Guess an identifier, edit encrypted JSON or blindly retry |
+| Uncertain ACK/CLOSE/vault/restore or other non-ticket write | Inspect independent outcome and filesystem artifacts, retain PENDING if any ambiguity remains | Auto-clear the reservation or re-run under a new key merely to bypass it |
+| Historical code/store rollback requested while PENDING exists | Do not launch old code against live stores. Keep the last known code and matching encrypted generation, with local access to unresolved writes suspended | Treat a source-only revert or deletion of ledger fields as safe |
+
+Only consider a **consistent pre-change restore** of code, *both* encrypted state files, vault chunks, relevant outputs and recovery metadata when an owner can establish an offline snapshot boundary and that no later business writes must be preserved. Otherwise leave the original bytes and candidate branch intact; this project has **no automated safe rollback** for outstanding PENDING. Such a snapshot rollback may itself lose legitimate post-snapshot activity and needs explicit operator review, not merely passing unit tests.
+
+For an owner reconciliation audit, record the redacted compound-key fingerprint, operation ID where present, encrypted-generation identifiers, disposition of external/physical outcomes, evidence provenance, recovery/rollback decision, timestamp and reviewer. Never store secrets or raw request payloads in that audit. Even convincing external evidence does not grant the present code a safe general-purpose PENDING reset. **There is no reset API in this candidate.**
+
 ## Owner response when outcome is still unknown
 
 1. Stop automatic retries of the affected business action and preserve the original principal, action, idempotency-key reference, request business identity, local timestamps and redacted error, **not** signing secrets.
