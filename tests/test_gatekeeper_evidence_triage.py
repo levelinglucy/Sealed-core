@@ -139,7 +139,15 @@ class PendingEvidenceTriageTests(unittest.TestCase):
 
     def test_wrong_secret_or_missing_secret_fails_closed(self):
         gate = GatekeeperV22(self.storage)
-        gate.close()
+        try:
+            gate._execute = lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("synthetic interruption")
+            )
+            self.assertFalse(
+                gate.request(self.signed("secret-check-key-001", "secret-check-nonce-0001"))["ok"]
+            )
+        finally:
+            gate.close()
         with patch.dict(os.environ, {"SEALED_OWNER_SECRET": ""}):
             with self.assertRaises(RuntimeError):
                 inspect_pending_evidence_local(self.storage)
