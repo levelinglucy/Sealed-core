@@ -5,7 +5,7 @@
 **Stage:** local-only Gatekeeper v2.2 [PR #8](https://github.com/levelinglucy/Sealed-core/pull/8), **draft, unmerged**, stable release blocked by legacy/non-ticket reconciliation and device/power-loss evidence.
 **Current milestone:** link signed NEW_TICKET to the core-atomic operation receipt and safely recover exact committed tickets.
 **Latest:** encrypted PENDING ID from authenticated signed request now enters `SealedCore.handle_with_gatekeeper_operation()`; signed matching-key retries reconstruct a core-proven receipt and matching ticket scope. No duplicate ticket on after-commit interruption. Missing, legacy or mismatched core proof fails closed, including changed scope.
-**Evidence:** [CI 42280404380](https://github.com/levelinglucy/Sealed-core/actions/runs/42280404380) passed 48/48 Python unit tests plus nine core self-tests **on each** Python 3.11/3.12, including synthetic separate-interpreter `os._exit` tests.
+**Evidence:** [final CI 42288153350](https://github.com/levelinglucy/Sealed-core/actions/runs/42288153350) passed 53/53 Python unit tests plus nine core self-tests **on each** Python 3.11/3.12, including synthetic separate-interpreter `os._exit` tests.
 **Next:** owner-only audited reconciliation for *unlinked* pending and non-ticket writes; crash/power cut + Pythonista tests; compatible rollback evaluation.
 **Limits:** no general exactly-once guarantee, no safe blind retry on missing receipt, no signed recovery endpoint; cross-file state and filesystem writes are not atomic. Tests are synthetic Linux CI, not trusted iPhone or power-cut evidence.
 

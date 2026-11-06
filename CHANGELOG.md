@@ -6,7 +6,7 @@
 
 **Change / why:** added `inspect_pending_evidence_local()` to compare redacted markers with one authenticated core snapshot under the existing request lock. Report core-linked ticket evidence, absent/legacy markers, mismatched hashes and structurally incomplete receipts **without changing encrypted state, outputting business keys/scope/tickets or authorizing a retry**. This is deliberately not a new signed action, network endpoint, or automatic reconciler. Existing signed-ticket recovery is unchanged.
 
-**Validation:** five synthetic regression scenarios including byte-identical before/after encrypted Gatekeeper and core files, missing/wrong owner secret, no new policy action, postcommit evidence, precommit uncertainty and conflict/legacy ambiguity. See exact branch CI status before considering release.
+**Validation:** five synthetic regression scenarios including byte-identical before/after encrypted Gatekeeper and core files, missing/wrong owner secret, no new policy action, postcommit evidence, precommit uncertainty and conflict/legacy ambiguity. [Pre-documentation final CI 42288153350](https://github.com/levelinglucy/Sealed-core/actions/runs/42288153350) passed **53/53 unit tests and 9/9 self-tests on each Python 3.11/3.12**; the final docs-only revision needs its own check.
 
 **Limitations / rollback:** `CORE_TICKET_RECEIPT_PRESENT` does not verify the *current* principal registry scope or authorize clearing PENDING; non-ticket/historical unknowns remain blocked. Local lock files/directories may be created. No Pythonista/power-cut test, safe downgrade or stable merge/release. Preserve both encrypted stores and draft branch; do not run older code against unresolved reservations.
 
