@@ -2,9 +2,10 @@
 
 ## Development summary
 
-**Status:** local-only modular stack; file-restore integrity repair under review on `noe/portfolio-restore-integrity` (no stable release/tag claimed).  
+**Status:** local-only modular stack; [file-restore integrity PR #2](https://github.com/levelinglucy/Sealed-core/pull/2) merged as an integrated candidate at [`385c4cd0`](https://github.com/levelinglucy/Sealed-core/commit/385c4cd0c4039ac76c268af96c8a688c0bd7e328); not a tagged stable release.  
 **Latest change (2026-11-06):** stage decrypted vault files beside the target, verify every AES-GCM chunk and the whole-object SHA-256, then publish by atomic replacement or exclusive hard link. A corrupt/missing chunk no longer truncates an existing file when `overwrite=True`.  
-**Next steps:** (1) validate the exact PR and merged revision via Python CI; (2) fix directory restore's destructive pre-extraction overwrite in a separate bounded change; (3) review gatekeeper nonce/idempotency and scope transaction boundaries.  
+**Validation:** 12/12 unittest cases and all nine core self-tests passed on [PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42217418606) and [merged-main CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42217565879) (Python 3.12).  
+**Next steps:** (1) fix directory restore's destructive pre-extraction overwrite; (2) review gatekeeper nonce/idempotency and scope transaction boundaries; (3) gather trusted target-device evidence.  
 **Known limitations:** ordinary file restore writes temporary plaintext with owner-only filesystem permissions; a hard process crash can leave a staging file that should be removed securely. File restoration uses same-directory atomic publication, but this is not proof of full power-loss durability on every filesystem. Directory overwrite is **not yet safe** when extraction fails; avoid `restore_directory(..., overwrite=True)` with valuable existing contents until its repair is validated.  
 [Changelog](./CHANGELOG.md) · [Engineering decisions](./DEV_NOTES.md) · [Roadmap](./ROADMAP.md)
 
