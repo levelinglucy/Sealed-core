@@ -1,5 +1,15 @@
 # Sealed-core changelog
 
+## Draft owner-local encrypted evidence triage (2026-11-06; PR #8, unmerged)
+
+**Affected:** `gatekeeper_v2_2.py`, `tests/test_gatekeeper_evidence_triage.py`, recovery guide, README, roadmap and developer decisions. **Before:** `inspect_pending_local()` listed redacted PENDING markers but required an operator to correlate them with core records manually.
+
+**Change / why:** added `inspect_pending_evidence_local()` to compare redacted markers with one authenticated core snapshot under the existing request lock. Report core-linked ticket evidence, absent/legacy markers, mismatched hashes and structurally incomplete receipts **without changing encrypted state, outputting business keys/scope/tickets or authorizing a retry**. This is deliberately not a new signed action, network endpoint, or automatic reconciler. Existing signed-ticket recovery is unchanged.
+
+**Validation:** five synthetic regression scenarios including byte-identical before/after encrypted Gatekeeper and core files, missing/wrong owner secret, no new policy action, postcommit evidence, precommit uncertainty and conflict/legacy ambiguity. See exact branch CI status before considering release.
+
+**Limitations / rollback:** `CORE_TICKET_RECEIPT_PRESENT` does not verify the *current* principal registry scope or authorize clearing PENDING; non-ticket/historical unknowns remain blocked. Local lock files/directories may be created. No Pythonista/power-cut test, safe downgrade or stable merge/release. Preserve both encrypted stores and draft branch; do not run older code against unresolved reservations.
+
 ## Draft signed ticket evidence recovery (2026-11-06; PR #8, unmerged)
 
 **Affected:** `gatekeeper_v2_2.py`, existing interrupted Gatekeeper tests, new `tests/test_gatekeeper_linked_recovery.py`, `sealed_core.py` development header, README, recovery guide, roadmap and developer decisions. Earlier core primitive remains in the draft branch.
