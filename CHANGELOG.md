@@ -1,7 +1,7 @@
 # Sealed-core changelog
 
 
-## Unreleased — directory-restore rollback candidate (2026-11-06)
+## Integrated candidate — directory-restore rollback (2026-11-06; untagged)
 
 **Scope:** `sealed_core.py` directory restoration / tar extraction, eleven synthetic integrity tests, README, engineering notes and roadmap.
 
@@ -9,7 +9,7 @@
 
 **After:** verify encrypted chunks and whole-object hash, extract inside a sibling private staging directory with a single expected top-level tree and safe tar filtering, then move the old target to a recoverable sibling backup before publishing the staged tree. Roll back on ordinary publication failure; deliberately retain old backup if rollback fails. New tests cover missing and invalid ciphertext, malformed authenticated tar, path traversal and unexpected roots, older-Python link rejection, rollback successes/failures, overwrite and fresh restore round-trips, and no-overwrite.
 
-**Validation:** tests introduced on topic branch; CI result pending when drafted. The verified baseline remains file-restore PR #2 / docs PR #3 (12/12 unittest + nine self-tests).
+**Validation:** [directory PR #4](https://github.com/levelinglucy/Sealed-core/pull/4) merged as [`7e647ed0`](https://github.com/levelinglucy/Sealed-core/commit/7e647ed06a8d19a0e28015a9729f801985db77a2). [PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42225523051) and [merged-main CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42225646052) each passed 23/23 unittest cases plus all nine original self-tests on both Python 3.11 and 3.12. All tests use synthetic fixtures and temporary storage; no trusted end-user vault or Pythonista device was touched.
 
 **Limits and recovery:** this is not an atomic directory swap; sudden termination between renames may leave old content in `.NAME.sealed-backup-*` or expose a brief missing target. A failed rollback preserves the backup for manual restoration. Staging plaintext may persist after a hard crash. On Python without the tar data filter, archives with links/special files are rejected. No filesystem power-loss, concurrent-writer or Pythonista guarantee. No stable release/tag asserted.
 
