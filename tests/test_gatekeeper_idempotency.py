@@ -18,6 +18,7 @@ from gatekeeper_v2_2 import GatekeeperV22, build_signed_request, sign_request
 
 OWNER_SECRET = "synthetic-owner-secret-for-regression-2026"
 PRINCIPAL_SECRET = "synthetic-principal-hmac-secret-for-regression"
+EXTERNAL_SECRET = "synthetic-external-hmac-secret-for-regression"
 
 
 class GatekeeperIdempotencyTests(unittest.TestCase):
@@ -30,7 +31,22 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
                     "role": "OWNER",
                     "secret": PRINCIPAL_SECRET,
                     "scope_id": "owner",
-                }
+                },
+                "creator-alpha": {
+                    "role": "EXTERNAL_CREATE",
+                    "secret": EXTERNAL_SECRET,
+                    "scope_id": "alpha",
+                },
+                "ack-alpha": {
+                    "role": "EXTERNAL_ACK",
+                    "secret": EXTERNAL_SECRET,
+                    "scope_id": "alpha",
+                },
+                "ack-beta": {
+                    "role": "EXTERNAL_ACK",
+                    "secret": EXTERNAL_SECRET,
+                    "scope_id": "beta",
+                },
             }),
         })
         self.env.start()
@@ -47,13 +63,14 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
         self.temp.cleanup()
 
     @staticmethod
-    def signed(action, key, nonce, payload=None):
+    def signed(action, key, nonce, payload=None, principal_id="owner-local",
+               secret=PRINCIPAL_SECRET):
         request = build_signed_request(
-            "owner-local", PRINCIPAL_SECRET, action,
+            principal_id, secret, action,
             payload=payload or {}, idempotency_key=key,
         )
         request["nonce"] = nonce
-        request["signature"] = sign_request(request, PRINCIPAL_SECRET)
+        request["signature"] = sign_request(request, secret)
         return request
 
     def test_parallel_retry_with_distinct_nonces_executes_once(self):
@@ -135,6 +152,54 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
         self.assertEqual(
             self.gate_one.request(req1)["error"], "REPLAYED_NONCE"
         )
+
+
+    def test_external_ack_is_limited_to_its_ticket_scope(self):
+        """The persisted scope binding controls reads and acknowledgements."""
+        creation = self.gate_one.request(self.signed(
+            "NEW_TICKET", "create-alpha-0001", "scope-create-nonce-00001",
+            {"subject": "synthetic scope test", "body": "local-only fixture",
+             "from_email": "synthetic@example.test"},
+            principal_id="creator-alpha", secret=EXTERNAL_SECRET,
+        ))
+        self.assertTrue(creation["ok"], creation)
+        ticket_id = creation["data"]["ticket_id"]
+
+        foreign_detail = self.gate_two.request(self.signed(
+            "GET_TICKET_DETAIL", None, "scope-beta-detail-00001",
+            {"ticket_id": ticket_id},
+            principal_id="ack-beta", secret=EXTERNAL_SECRET,
+        ))
+        self.assertEqual(foreign_detail, {"ok": False, "error": "SCOPE_NOT_ALLOWED"})
+
+        foreign_ack = self.gate_two.request(self.signed(
+            "ACK_TICKET", "ack-beta-0000001", "scope-beta-ack-0000001",
+            {"ticket_id": ticket_id},
+            principal_id="ack-beta", secret=EXTERNAL_SECRET,
+        ))
+        self.assertEqual(foreign_ack, {"ok": False, "error": "SCOPE_NOT_ALLOWED"})
+
+        foreign_list = self.gate_two.request(self.signed(
+            "LIST_OPEN_SUMMARY", None, "scope-beta-list-0000001",
+            principal_id="ack-beta", secret=EXTERNAL_SECRET,
+        ))
+        self.assertTrue(foreign_list["ok"], foreign_list)
+        self.assertEqual(foreign_list["data"]["open"], [])
+
+        same_scope = self.gate_one.request(self.signed(
+            "LIST_OPEN_SUMMARY", None, "scope-alpha-list-00001",
+            principal_id="ack-alpha", secret=EXTERNAL_SECRET,
+        ))
+        self.assertTrue(same_scope["ok"], same_scope)
+        self.assertIn(ticket_id, [x["ticket_id"] for x in same_scope["data"]["open"]])
+
+        valid_ack = self.gate_one.request(self.signed(
+            "ACK_TICKET", "ack-alpha-000001", "scope-alpha-ack-00001",
+            {"ticket_id": ticket_id},
+            principal_id="ack-alpha", secret=EXTERNAL_SECRET,
+        ))
+        self.assertTrue(valid_ack["ok"], valid_ack)
+        self.assertTrue(valid_ack["data"]["changed"])
 
 
 if __name__ == "__main__":
