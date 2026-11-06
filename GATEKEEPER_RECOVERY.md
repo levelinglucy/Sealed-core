@@ -20,6 +20,23 @@ for item in inspect_pending_local("sealed_storage"):  # trusted local host only
     print(item)
 ```
 
+### Cross-store evidence triage (owner-local, read-only)
+
+A second helper compares PENDING markers with **one authenticated encrypted core-state generation**, without clearing markers, issuing requests or copying ticket contents. On the original trusted host, with the usual owner secret:
+
+```python
+from gatekeeper_v2_2 import inspect_pending_evidence_local
+for row in inspect_pending_evidence_local("sealed_storage"):
+    print(row["key_ref_sha256"], row["core_evidence"])
+```
+
+- `CORE_TICKET_RECEIPT_PRESENT`: a matching operation ID and request hash reference an internally consistent ticket receipt in encrypted core state. **Current registry scope and signed request have not been authenticated by this helper**. This is not permission to clear PENDING, create a new key, or grant external access. Actual recovery still requires a fresh signed same-key request with matching authorized scope.
+- `NO_CORE_RECEIPT_UNKNOWN`: no corresponding core receipt is visible; this **does not prove the write never happened**.
+- `LEGACY_UNLINKED_UNKNOWN` or `INVALID_ID_UNKNOWN`: historical/unusable correlation, never infer success from similar-looking tickets.
+- `CORE_RECEIPT_CONFLICT` or `CORE_RECEIPT_INCOMPLETE`: inconsistent or incomplete evidence; stop, preserve both encrypted originals and inspect offline on a copy. Never repair it by hand-editing stores.
+
+Every row explicitly reports `authorizes_retry_or_clear=False` and `current_scope_verified=False`; it includes only redacted identifiers/hashes and diagnostic status, not the principal, original key, scope, signed payload or ticket. The helper requires the **local owner secret** and uses the existing request lock. Encrypted state files are not rewritten, although local lock files/working directories may be created. Do not expose its output outside a trusted owner workstation.
+
 A new linked ticket's operation ID is present in both encrypted stores only after the core transaction commits. The core's `get_gatekeeper_ticket_receipt()` validates exact ID/hash/scope without mutation, but does not independently authenticate callers. The **Gatekeeper's HMAC, nonce, role and registry-scope validation must happen first**. Operation IDs on their own are not a proof of execution or entitlement, and a missing core record must not be used to reset state.
 
 ## Owner response when outcome is still unknown
