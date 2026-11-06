@@ -1,6 +1,6 @@
 # Sealed-core development roadmap
 
-**Current bounded step (draft only):** build and validate an opt-in, atomic core-side `NEW_TICKET` operation receipt in the same encrypted generation as ticket/metrics/intents. Acceptance: exact ID replay, mismatch rejection, legacy compatibility and interrupted precommit/committed tests. **Next** connect authenticated Gatekeeper reservation IDs and scope without broadening signed capabilities; only then design audited owner-local reconciliation. No automatic pending reset or merge.
+**Current bounded step (draft only, validated):** opt-in, atomic core-side `NEW_TICKET` operation receipt now shares the encrypted state generation with ticket/metrics/intents. Five new regression tests cover exact ID replay, mismatch rejection, legacy compatibility, failed persist and interrupted precommit/committed behavior. [Code-head CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42270761333): 43/43 unit + nine self-tests on **each** Python 3.11 and 3.12. **Next** connect authenticated Gatekeeper reservation IDs and scope without broadening signed capabilities; only then design audited owner-local reconciliation. No automatic pending reset or merge.
 
 
 **Current target:** [draft PR #8](https://github.com/levelinglucy/Sealed-core/pull/8) proposes a conservative response to missing Gatekeeper receipts after an interrupted local write. This is **not merged or released**. Previous concurrency and restore repairs remain integrated on main; protect data correctness before improving appearance or adding features.

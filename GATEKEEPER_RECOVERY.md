@@ -31,6 +31,12 @@ for item in records:
 
 Each record includes \`key_ref_sha256\` (the SHA-256 of the existing \`principal_id:idempotency_key\` string), \`request_hash\`, \`created_at\`, \`status\`, and an optional random \`operation_id\`. It does **not** return raw business keys, principal IDs, nonces, signed payloads or secrets. Legacy pending markers show \`operation_id: None\`. A newly generated operation ID is **currently only in Gatekeeper's store**: neither its presence nor absence proves a core mutation, and it is **not a reconciliation key yet**. Do not automatically clear any marker, including apparently old ones. Inspect on a trusted, owner-controlled device and avoid publishing the diagnostics.
 
+## Experimental core-side receipt (not connected to Gatekeeper yet)
+
+The current draft branch has an **opt-in** `SealedCore.handle_with_gatekeeper_operation()` primitive. When invoked explicitly with an opaque 128-bit hex operation ID, signed-request business hash and authorized scope, it stores the exact NEW_TICKET reply in the *same encrypted core transaction* as the ticket, metric and intents. `get_gatekeeper_ticket_receipt()` performs an exact ID/hash/scope lookup without mutation. Synthetic process termination tests and persisted-state readback passed [code-head CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42270761333) on Python 3.11/3.12.
+
+**Crucial:** the signed Gatekeeper request flow **still calls the existing `core.handle()`**, so today's PENDING operation IDs are **not linked** to these core receipts. A missing core receipt cannot justify clearing an actual PENDING record. Older tickets have no operation map. This experimental helper must not be used as an owner authorization shortcut or an automated recovery command; signed principal and scope binding have not been integrated. All earlier fail-closed handling above remains in effect. No stable merge/release or power-loss/device claim.
+
 ## Compatibility and rollback cautions
 
 The candidate extends existing encrypted Gatekeeper state values with `status: PENDING` before execution and `status: COMMITTED` after receipt storage. Old completed entries with only `result` remain valid. The envelope schema, secrets and signatures are unchanged. The number of stored idempotency entries is bounded. Pending entries are retained in preference to completed entries; exhausted pending capacity rejects new keyed requests with `IDEMPOTENCY_CAPACITY_REACHED` rather than discarding uncertain operations. Older completed receipts may still age out of this bounded cache.
