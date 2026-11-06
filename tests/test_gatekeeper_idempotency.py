@@ -83,7 +83,7 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
         replies = [None, None]
         failures = []
 
-        def synthetic_write(action, principal, payload):
+        def synthetic_write(action, principal, payload, *_operation):
             with mutex:
                 invocations.append(1)
                 sequence = len(invocations)
@@ -200,6 +200,167 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
         ))
         self.assertTrue(valid_ack["ok"], valid_ack)
         self.assertTrue(valid_ack["data"]["changed"])
+
+
+    def _open_tickets(self):
+        # Core is reopened from the encrypted synthetic fixture, not mocked.
+        from sealed_core import SealedCore
+        with SealedCore(OWNER_SECRET, storage_dir=self.gate_one.storage_dir) as core:
+            return core.list_open_summary()
+
+    def test_failed_scope_bind_does_not_blindly_retry_committed_ticket(self):
+        """The core may commit before Gatekeeper persists the ticket scope."""
+        first = self.signed(
+            "NEW_TICKET", "crash-scope-key-0001", "crash-scope-nonce-0001",
+            {"subject": "synthetic interrupted bind", "body": "local-only"},
+            principal_id="creator-alpha", secret=EXTERNAL_SECRET,
+        )
+        with patch.object(self.gate_one.state, "bind_ticket_scope",
+                          side_effect=RuntimeError("injected interruption after core commit")):
+            self.assertEqual(
+                self.gate_one.request(first), {"ok": False, "error": "INTERNAL_ERROR"}
+            )
+        created = self._open_tickets()
+        self.assertEqual(len(created), 1, created)
+        self.assertIsNone(self.gate_one.state.ticket_scope(created[0]["ticket_id"]))
+
+        second = self.signed(
+            "NEW_TICKET", "crash-scope-key-0001", "crash-scope-nonce-0002",
+            {"subject": "synthetic interrupted bind", "body": "local-only"},
+            principal_id="creator-alpha", secret=EXTERNAL_SECRET,
+        )
+        recovered = self.gate_two.request(second)
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertEqual(recovered["data"]["ticket_id"], created[0]["ticket_id"])
+        self.assertEqual(
+            self.gate_two.state.ticket_scope(created[0]["ticket_id"]), "alpha"
+        )
+        self.assertEqual(len(self._open_tickets()), 1)
+
+    def test_failed_receipt_write_does_not_blindly_retry_committed_ticket(self):
+        """A committed ticket + scope might lack its idempotency receipt."""
+        first = self.signed(
+            "NEW_TICKET", "crash-receipt-key-01", "crash-receipt-nonce-0001",
+            {"subject": "synthetic interrupted receipt", "body": "local-only"},
+            principal_id="creator-alpha", secret=EXTERNAL_SECRET,
+        )
+        with patch.object(self.gate_one.state, "record_idempotent_result",
+                          side_effect=RuntimeError("injected interruption before receipt")):
+            self.assertEqual(
+                self.gate_one.request(first), {"ok": False, "error": "INTERNAL_ERROR"}
+            )
+        created = self._open_tickets()
+        self.assertEqual(len(created), 1, created)
+        self.assertEqual(
+            self.gate_one.state.ticket_scope(created[0]["ticket_id"]), "alpha"
+        )
+
+        second = self.signed(
+            "NEW_TICKET", "crash-receipt-key-01", "crash-receipt-nonce-0002",
+            {"subject": "synthetic interrupted receipt", "body": "local-only"},
+            principal_id="creator-alpha", secret=EXTERNAL_SECRET,
+        )
+        recovered = self.gate_two.request(second)
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertEqual(recovered["data"]["ticket_id"], created[0]["ticket_id"])
+        self.assertEqual(len(self._open_tickets()), 1)
+
+    def test_pending_reservation_is_retained_during_bounded_receipt_prune(self):
+        """An uncertain result must not be silently discarded to save space."""
+        state = self.gate_one.state._new_state()
+        state["idempotency"] = {
+            "pending": {
+                "request_hash": "a", "created_at": "2020-01-01T00:00:00Z",
+                "status": "PENDING",
+            },
+            **{
+                f"completed-{i}": {
+                    "request_hash": "b", "created_at": f"2026-11-06T12:00:0{i}Z",
+                    "result": {"ok": True},
+                }
+                for i in range(4)
+            },
+        }
+        with patch("gatekeeper_v2_2.MAX_IDEMPOTENCY", 3):
+            self.gate_one.state._prune(state)
+        self.assertIn("pending", state["idempotency"])
+        self.assertLessEqual(len(state["idempotency"]), 3)
+
+
+    def test_precommit_error_is_conservatively_uncertain(self):
+        """Without a core-linked commit marker, even no-op failure is ambiguous."""
+        invocations = []
+        def interrupted_execute(*_args):
+            invocations.append(1)
+            raise RuntimeError("synthetic precommit error")
+        self.gate_one._execute = interrupted_execute
+        self.gate_two._execute = interrupted_execute
+
+        first = self.signed(
+            "NEW_TICKET", "precommit-key-000001", "precommit-nonce-0001",
+            {"subject": "precommit"},
+        )
+        second = self.signed(
+            "NEW_TICKET", "precommit-key-000001", "precommit-nonce-0002",
+            {"subject": "precommit"},
+        )
+        self.assertEqual(
+            self.gate_one.request(first), {"ok": False, "error": "INTERNAL_ERROR"}
+        )
+        self.assertEqual(
+            self.gate_two.request(second),
+            {"ok": False, "error": "OPERATION_OUTCOME_UNKNOWN"},
+        )
+        self.assertEqual(len(invocations), 1)
+
+    def test_pending_capacity_exhaustion_rejects_fresh_write(self):
+        """Never delete uncertain reservations to admit another local write."""
+        self.gate_one._execute = lambda *_: (_ for _ in ()).throw(
+            RuntimeError("synthetic interrupted write")
+        )
+        self.gate_two._execute = lambda *_: {"unexpected": "executed"}
+        with patch("gatekeeper_v2_2.MAX_IDEMPOTENCY", 1):
+            self.assertEqual(
+                self.gate_one.request(self.signed(
+                    "NEW_TICKET", "capacity-key-00001", "capacity-nonce-000001"
+                ))["error"],
+                "INTERNAL_ERROR",
+            )
+            self.assertEqual(
+                self.gate_two.request(self.signed(
+                    "NEW_TICKET", "capacity-key-00002", "capacity-nonce-000002"
+                ))["error"],
+                "IDEMPOTENCY_CAPACITY_REACHED",
+            )
+            self.assertEqual(
+                self.gate_two.request(self.signed(
+                    "NEW_TICKET", "capacity-key-00001", "capacity-nonce-000003"
+                ))["error"],
+                "OPERATION_OUTCOME_UNKNOWN",
+            )
+
+
+    def test_preexisting_completed_receipt_without_status_remains_readable(self):
+        """The v2.2 legacy receipt schema had no explicit COMMITTED status."""
+        from sealed_core import _StoreFileLock
+        req = self.signed(
+            "NEW_TICKET", "legacy-completed-0001", "legacy-nonce-000001",
+            {"subject": "historical receipt"},
+        )
+        saved_result = {
+            "ok": True, "action": "NEW_TICKET",
+            "data": {"ticket_id": "existing-synthetic-receipt"},
+        }
+        with _StoreFileLock(self.gate_one.state.lock_path):
+            state = self.gate_one.state._load_locked()
+            state["idempotency"]["owner-local:legacy-completed-0001"] = {
+                "request_hash": self.gate_one._business_hash(req),
+                "created_at": "2026-11-06T12:00:00Z",
+                "result": saved_result,
+            }
+            self.gate_one.state._save_locked(state)
+        self.gate_two._execute = lambda *_: self.fail("legacy receipt was replayed")
+        self.assertEqual(self.gate_two.request(req), saved_result)
 
 
 if __name__ == "__main__":

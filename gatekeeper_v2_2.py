@@ -8,7 +8,10 @@ Design:
 - per-principal HMAC signatures over canonical JSON;
 - timestamp skew + encrypted nonce registry blocks replay;
 - write actions require idempotency keys;
-- idempotent retries return the original result;
+- completed idempotent retries return the original result;
+- uncertain keyed writes stay PENDING; authenticated NEW_TICKET retries can
+  recover only a matching atomic core receipt (draft PR #8);
+  all other missing/unlinked outcomes fail closed;
 - external acknowledgers are constrained to their own ticket scope;
 - explicit output allowlists; no raw-object passthrough;
 - no network listener and no remote I/O.
@@ -273,8 +276,16 @@ class GatekeeperState:
 
         idem = state.get("idempotency", {})
         if len(idem) > MAX_IDEMPOTENCY:
-            ordered = sorted(idem.items(), key=lambda kv: kv[1].get("created_at", ""), reverse=True)[:MAX_IDEMPOTENCY]
-            state["idempotency"] = dict(ordered)
+            # Pending records mean a mutation might already have committed.
+            # Never evict them for an older timestamp: the next retry must
+            # fail closed rather than silently executing the operation again.
+            pending = {key: item for key, item in idem.items() if "result" not in item}
+            completed = sorted(
+                ((key, item) for key, item in idem.items() if "result" in item),
+                key=lambda kv: kv[1].get("created_at", ""), reverse=True,
+            )
+            remaining = max(0, MAX_IDEMPOTENCY - len(pending))
+            state["idempotency"] = {**pending, **dict(completed[:remaining])}
 
     def consume_nonce_and_check_idempotency(
         self,
@@ -282,7 +293,9 @@ class GatekeeperState:
         nonce: str,
         request_hash: str,
         idempotency_key: Optional[str],
-    ) -> Optional[dict]:
+        *,
+        allow_ticket_recovery: bool = False,
+    ) -> tuple[Optional[dict], Optional[str], bool]:
         nonce_key = f"{principal_id}:{nonce}"
         idem_key = f"{principal_id}:{idempotency_key}" if idempotency_key else None
 
@@ -300,8 +313,39 @@ class GatekeeperState:
                 if prior and prior.get("request_hash") != request_hash:
                     raise ValueError("IDEMPOTENCY_KEY_REUSED_FOR_DIFFERENT_REQUEST")
 
+            if idem_key and prior is None:
+                # Persist the reservation in the same encrypted write as the
+                # nonce, *before* any action can mutate the independent core.
+                # If the process dies later, a fresh signed retry cannot
+                # mistake the missing receipt for permission to execute again.
+                pending_count = sum(
+                    "result" not in item
+                    for item in state["idempotency"].values()
+                )
+                if pending_count >= MAX_IDEMPOTENCY:
+                    raise ValueError("IDEMPOTENCY_CAPACITY_REACHED")
+                state["idempotency"][idem_key] = {
+                    "request_hash": request_hash,
+                    "created_at": _format_utc(_utc_now()),
+                    "status": "PENDING",
+                    # Generated only after HMAC, role, nonce and business
+                    # identity checks. Linked to the core on NEW_TICKET.
+                    "operation_id": secrets.token_hex(16),
+                }
+                self._prune(state)
+
             self._save_locked(state)
-            return copy.deepcopy(prior.get("result")) if prior else None
+            was_pending = prior is not None and "result" not in prior
+            if was_pending and not allow_ticket_recovery:
+                # Filesystem and non-ticket actions remain uncertain.
+                raise ValueError("OPERATION_OUTCOME_UNKNOWN")
+            reservation = state["idempotency"].get(idem_key) if idem_key else None
+            operation_id = reservation.get("operation_id") if reservation else None
+            return (
+                copy.deepcopy(prior.get("result")) if prior and "result" in prior else None,
+                operation_id,
+                was_pending,
+            )
 
     def record_idempotent_result(
         self,
@@ -313,16 +357,29 @@ class GatekeeperState:
         idem_key = f"{principal_id}:{idempotency_key}"
         with _StoreFileLock(self.lock_path):
             state = self._load_locked()
+            previous = state["idempotency"].get(idem_key)
+            if not isinstance(previous, dict) or previous.get("request_hash") != request_hash:
+                raise ValueError("IDEMPOTENCY_RESERVATION_MISMATCH")
             state["idempotency"][idem_key] = {
                 "request_hash": request_hash,
                 "created_at": _format_utc(_utc_now()),
+                "status": "COMMITTED",
                 "result": copy.deepcopy(result),
+                # Keep the correlation ID for future audit. Older completed
+                # receipts without an ID remain readable.
+                **({"operation_id": previous["operation_id"]}
+                   if "operation_id" in previous else {}),
             }
             self._save_locked(state)
 
     def bind_ticket_scope(self, ticket_id: str, scope_id: str) -> None:
         with _StoreFileLock(self.lock_path):
             state = self._load_locked()
+            existing = state["ticket_scopes"].get(ticket_id)
+            if existing is not None and existing != scope_id:
+                raise ValueError("SCOPE_BINDING_CONFLICT")
+            if existing == scope_id:
+                return
             state["ticket_scopes"][ticket_id] = scope_id
             self._save_locked(state)
 
@@ -330,6 +387,34 @@ class GatekeeperState:
         with _StoreFileLock(self.lock_path):
             state = self._load_locked()
             return state["ticket_scopes"].get(ticket_id)
+
+    def list_pending_local(self) -> list[dict]:
+        """Read-only owner-local diagnostics; never clear uncertain writes.
+
+        The stored composite key cannot be parsed reliably: both principal IDs
+        and business keys may include ':'. Fingerprint it instead of exposing
+        the original business key, principal, nonce, or payload.
+        """
+        with _StoreFileLock(self.lock_path):
+            state = self._load_locked()
+            pending = []
+            for key_ref, item in state["idempotency"].items():
+                if not isinstance(item, dict) or "result" in item:
+                    continue
+                pending.append({
+                    "key_ref_sha256": hashlib.sha256(
+                        key_ref.encode("utf-8")
+                    ).hexdigest(),
+                    "operation_id": item.get("operation_id"),
+                    "request_hash": item.get("request_hash"),
+                    "created_at": item.get("created_at"),
+                    "status": "PENDING",
+                })
+            return sorted(
+                pending,
+                key=lambda item: (item["created_at"] or "",
+                                  item["key_ref_sha256"]),
+            )
 
     def close(self) -> None:
         for i in range(len(self.key)):
@@ -410,13 +495,15 @@ class GatekeeperV22:
             raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
 
         request_hash = self._business_hash(request)
-        prior = self.state.consume_nonce_and_check_idempotency(
+        prior, operation_id, existing_pending = self.state.consume_nonce_and_check_idempotency(
             principal_id,
             nonce,
             request_hash,
             idempotency_key,
+            allow_ticket_recovery=(action == "NEW_TICKET"),
         )
-        return action, principal, payload, request_hash, idempotency_key, prior
+        return (action, principal, payload, request_hash, idempotency_key,
+                prior, operation_id, existing_pending)
 
     def _core(self, principal: dict) -> SealedCore:
         mode = "OWNER" if principal["role"] == "OWNER" else "HELPER"
@@ -443,7 +530,9 @@ class GatekeeperV22:
         if scope is None or scope != principal["scope_id"]:
             raise ValueError("SCOPE_NOT_ALLOWED")
 
-    def _execute(self, action: str, principal: dict, payload: dict) -> dict:
+    def _execute(self, action: str, principal: dict, payload: dict,
+                 operation_id: Optional[str] = None,
+                 request_hash: Optional[str] = None) -> dict:
         with self._core(principal) as core:
             if action == "NEW_TICKET":
                 incoming = {
@@ -453,7 +542,15 @@ class GatekeeperV22:
                     "from_email": payload.get("from_email", "unknown@example.com"),
                     "timestamp": payload.get("timestamp"),
                 }
-                result = core.handle(incoming)
+                # Only the authenticated NEW_TICKET path supplies identity
+                # from the already-persisted encrypted PENDING reservation.
+                # Ticket and core receipt commit in the same generation.
+                if operation_id is None or request_hash is None:
+                    raise ValueError("MISSING_GATEKEEPER_OPERATION")
+                result = core.handle_with_gatekeeper_operation(
+                    incoming, operation_id=operation_id,
+                    request_hash=request_hash, scope_id=principal["scope_id"],
+                )
                 self.state.bind_ticket_scope(result["ticket_id"], principal["scope_id"])
                 return self._receipt(result)
 
@@ -527,19 +624,51 @@ class GatekeeperV22:
             # without this cross-process gate, simultaneous retries can both
             # mutate the core before either one records its result. Keep scoped
             # reads within the same boundary as ticket creation/scope binding.
-            # This prevents ordinary concurrent duplicates, NOT crash-window
-            # exactly-once semantics across two encrypted state files.
+            # NEW_TICKET now links a core-atomic receipt. Other actions are
+            # still not crash-atomic across independent state/output files.
             with _StoreFileLock(self.state.request_lock_path):
                 auth = self._authenticate(request)
-                action, principal, payload, request_hash, idempotency_key, prior = auth
+                (action, principal, payload, request_hash, idempotency_key,
+                 prior, operation_id, existing_pending) = auth
                 if prior is not None:
                     return copy.deepcopy(prior)
 
-                result = {
-                    "ok": True,
-                    "action": action,
-                    "data": self._execute(action, principal, payload),
-                }
+                if action == "NEW_TICKET" and existing_pending:
+                    # An authenticated retry may recover *only* exact
+                    # core-committed evidence. Missing/old/mismatched receipts
+                    # stay PENDING; never use absence to retry a mutation.
+                    if not operation_id:
+                        raise ValueError("OPERATION_OUTCOME_UNKNOWN")
+                    with self._core(principal) as core:
+                        try:
+                            receipt = core.get_gatekeeper_ticket_receipt(
+                                operation_id, request_hash, principal["scope_id"]
+                            )
+                        except ValueError as exc:
+                            if str(exc) == "GATEKEEPER_OPERATION_MISMATCH":
+                                raise ValueError("OPERATION_OUTCOME_UNKNOWN") from exc
+                            raise
+                    if receipt is None:
+                        raise ValueError("OPERATION_OUTCOME_UNKNOWN")
+                    self.state.bind_ticket_scope(
+                        receipt["ticket_id"], principal["scope_id"]
+                    )
+                    result = {
+                        "ok": True, "action": "NEW_TICKET",
+                        "data": self._receipt(receipt),
+                    }
+                elif action == "NEW_TICKET":
+                    result = {
+                        "ok": True, "action": action,
+                        "data": self._execute(
+                            action, principal, payload, operation_id, request_hash
+                        ),
+                    }
+                else:
+                    result = {
+                        "ok": True, "action": action,
+                        "data": self._execute(action, principal, payload),
+                    }
                 if idempotency_key:
                     self.state.record_idempotent_result(
                         request["principal_id"],
@@ -564,6 +693,90 @@ class GatekeeperV22:
 
     def close(self) -> None:
         self.state.close()
+
+
+def inspect_pending_local(storage_dir: str = DEFAULT_STORAGE_DIR) -> list[dict]:
+    """Read-only owner-secret recovery view, NOT a signed or network action.
+
+    A pending correlation ID is not evidence that the core committed. Never
+    auto-clear an uncertain reservation based on this diagnostic.
+    """
+    owner_secret = os.environ.get("SEALED_OWNER_SECRET")
+    if not owner_secret:
+        raise RuntimeError("SEALED_OWNER_SECRET environment variable required")
+    state = GatekeeperState(owner_secret, storage_dir=storage_dir)
+    try:
+        # Avoid reporting a transient PENDING from an ordinary in-flight
+        # cooperating request by acquiring the same outer operation lock.
+        with _StoreFileLock(state.request_lock_path):
+            return state.list_pending_local()
+    finally:
+        state.close()
+
+
+
+def inspect_pending_evidence_local(storage_dir: str = DEFAULT_STORAGE_DIR) -> list[dict]:
+    """Owner-local, read-only triage of PENDING against one encrypted core snapshot.
+
+    This does not authenticate a fresh business request or verify the current
+    principal registry scope. Even a matching atomic receipt is *not* authority
+    to clear a marker, grant ticket access, or retry an uncertain write.
+    No signing key, original principal, business key, scope or ticket is output.
+    """
+    owner_secret = os.environ.get("SEALED_OWNER_SECRET")
+    if not owner_secret:
+        raise RuntimeError("SEALED_OWNER_SECRET environment variable required")
+    state = GatekeeperState(owner_secret, storage_dir=storage_dir)
+    try:
+        # Match the ordinary signed request's lock order. Take the core state
+        # from one authenticated generation so multiple pending rows are not
+        # compared to different core snapshots.
+        with _StoreFileLock(state.request_lock_path):
+            pending = state.list_pending_local()
+            if not pending:
+                return []
+            with SealedCore(owner_secret, mode="OWNER",
+                            storage_dir=storage_dir) as core:
+                with _StoreFileLock(core.store.lock_path):
+                    snapshot = core.store._load_state_locked()
+
+            operations = snapshot.get("gatekeeper_ticket_operations", {})
+            tickets = snapshot.get("tickets", {})
+            for item in pending:
+                operation_id = item.get("operation_id")
+                if operation_id is None:
+                    evidence = "LEGACY_UNLINKED_UNKNOWN"
+                elif (not isinstance(operation_id, str)
+                      or re.fullmatch(r"[0-9a-f]{32}", operation_id) is None):
+                    evidence = "INVALID_ID_UNKNOWN"
+                else:
+                    record = operations.get(operation_id)
+                    if record is None:
+                        evidence = "NO_CORE_RECEIPT_UNKNOWN"
+                    elif (not isinstance(record, dict)
+                          or record.get("kind") != "NEW_TICKET"
+                          or record.get("request_hash") != item["request_hash"]
+                          or not isinstance(record.get("scope_id"), str)
+                          or not record["scope_id"]):
+                        evidence = "CORE_RECEIPT_CONFLICT"
+                    else:
+                        receipt = record.get("receipt")
+                        ticket_id = (receipt.get("ticket_id")
+                                     if isinstance(receipt, dict) else None)
+                        ticket = (tickets.get(ticket_id)
+                                  if isinstance(ticket_id, str) else None)
+                        if (not isinstance(ticket, dict)
+                            or ticket.get("ticket_id") != ticket_id
+                            or ticket.get("route") != receipt.get("route")):
+                            evidence = "CORE_RECEIPT_INCOMPLETE"
+                        else:
+                            evidence = "CORE_TICKET_RECEIPT_PRESENT"
+                item["core_evidence"] = evidence
+                item["authorizes_retry_or_clear"] = False
+                item["current_scope_verified"] = False
+            return pending
+    finally:
+        state.close()
 
 
 def gatekeeper_request(request: dict, storage_dir: str = DEFAULT_STORAGE_DIR) -> dict:

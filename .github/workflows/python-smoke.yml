@@ -20,6 +20,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The downgrade rehearsal needs the pinned pre-PR baseline object.
+          # No remote fetch is performed by the regression tests themselves.
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
