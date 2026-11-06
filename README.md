@@ -10,6 +10,8 @@
 
 **Why this matters:** a failed Gatekeeper receipt write no longer forces a known committed ticket to remain indefinitely unresolved; the independently stored core record supplies precise commit evidence. Missing evidence does **not** authorize a replay, and the system is not generally exactly-once or crash-atomic.
 
+**Owner-local diagnostic:** `inspect_pending_evidence_local(storage_dir)` now compares redacted PENDING IDs and hashes against a single authenticated core generation. It distinguishes core ticket receipt presence, missing evidence, old/unlinked entries and conflicts **without editing encrypted state**. A reported receipt does not authenticate current scope or permit clearing/retrying; only a fresh signed Gatekeeper request can perform verified recovery. See the recovery guide for safe use and limits.
+
 **Next:** design an auditable owner-local process for unlinked/legacy reservations and non-ticket filesystem side effects; evaluate safe downgrade and recoverable backups. Test power-loss/device durability before stable promotion. Source rollback alone can resurrect duplicate writes; do not downgrade a store with pending/linked operations.
 
 [Uncertain-outcome recovery notes](./GATEKEEPER_RECOVERY.md) · [Changelog](./CHANGELOG.md) · [Engineering decisions](./DEV_NOTES.md) · [Roadmap](./ROADMAP.md)
