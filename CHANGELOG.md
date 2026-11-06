@@ -1,6 +1,6 @@
 # Sealed-core changelog
 
-## Integrated candidate — concurrent Gatekeeper idempotency (2026-11-06; PR #6)
+## Merged integrated candidate — concurrent Gatekeeper idempotency (2026-11-06; PR #6)
 
 **Components:** `gatekeeper_v2_2.py`, `tests/test_gatekeeper_idempotency.py` and developer documentation.
 
@@ -8,7 +8,7 @@
 
 **Now:** a separate cooperating-process request file lock encloses authentication, side effects, scope binding and receipt storage. Retrying the same business action receives the cached result. Three synthetic tests cover concurrent same-key retries, replay/key-collision invariants and actual scoped-ticket isolation for external acknowledgers. Other historical integrity tests remain intact.
 
-**Validation:** [PR candidate CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234410661) passed 26/26 unit tests plus all nine core self-tests on each of Python 3.11 and 3.12. PR merge and merged-main checks require separate verification; no stable tag/release. Fixtures use fake local secrets and temp storage.
+**Validation:** [Final PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234685983) and [merged-main CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42234765405) passed 26/26 unit tests plus all nine core self-tests on each of Python 3.11 and 3.12. [PR #6](https://github.com/levelinglucy/Sealed-core/pull/6) was merged at [`9396f067`](https://github.com/levelinglucy/Sealed-core/commit/9396f067bf403fde4678850e7f69588437fb626e); **no stable tag/release**. Fixtures use fake local secrets and temp storage.
 
 **Trade-offs:** cooperating local calls are serialized, including reads; no network or new role access. Crash between a successful core mutation and idempotency/scope persistence can still leave a committed action without a receipt, and later retry can repeat it. Cross-platform locking, non-cooperating writers and Pythonista/iPhone execution remain unverified. Revisit with a durable core-linked transaction protocol if crash recovery becomes a requirement.
 
