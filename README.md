@@ -2,6 +2,8 @@
 
 ## Development summary
 
+**Latest core-side candidate (2026-11-06):** An opt-in `SealedCore.handle_with_gatekeeper_operation()` now stores NEW_TICKET's exact receipt, opaque operation ID, request hash and authorized scope in the **same encrypted core-state transaction** as the ticket, metric and intents. A read-only exact-match lookup and synthetic regression tests cover reuse, mismatches and precommit/committed process exit. **Gatekeeper is not wired to this primitive yet**, so its pending ID still cannot prove a real request's outcome; nothing is auto-reconciled.
+
 **Stage:** local-only v2.2 recovery integrity **draft candidate** in [PR #8](https://github.com/levelinglucy/Sealed-core/pull/8); **not merged or stable**. Earlier file/directory restore and cooperating Gatekeeper concurrency fixes are integrated into `main`.
 **Goal:** prevent an automatic same-key retry from silently repeating a local write whose outcome became uncertain between the core commit, scope binding and idempotency receipt.
 **Latest candidate (2026-11-06):** create an encrypted `PENDING` reservation *before* executing signed requests with idempotency keys. If the expected receipt is absent after an interruption, a matching newly signed retry returns `OPERATION_OUTCOME_UNKNOWN` rather than executing again. Preserve pending records during cache pruning. Existing completed receipts remain compatible.

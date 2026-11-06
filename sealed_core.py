@@ -28,6 +28,12 @@ v2.1 hardening added during reconstruction
 - best-effort key/state memory clearing;
 - built-in self-test.
 
+Draft development (2026-11-06): opt-in core-side NEW_TICKET operation receipts
+share one encrypted commit with ticket, metric and intents. Not yet connected
+to Gatekeeper's PENDING identifiers; see DEV_NOTES.md and draft PR #8.
+Next: connect authenticated signed request identity, scope and exact receipt,
+then test interrupted Gatekeeper recovery without clearing uncertain markers.
+
 No network code is present. Outbound actions are drafts stored as local intents.
 
 Dependency:
@@ -330,6 +336,10 @@ class SealedStore:
             "metrics": [],
             "intents": [],
             "vault": {"objects": {}},
+            # Each record is committed in the SAME encrypted generation as
+            # its NEW_TICKET ticket, metric and intents; never prune these
+            # while the corresponding ticket is retained.
+            "gatekeeper_ticket_operations": {},
         }
 
     def _validate_state(self, state: Any) -> Dict[str, Any]:
@@ -354,6 +364,9 @@ class SealedStore:
         objects = vault.get("objects", {})
         if not isinstance(objects, dict):
             raise ValueError("state.vault.objects must be an object")
+        operations = state.get("gatekeeper_ticket_operations", {})
+        if not isinstance(operations, dict):
+            raise ValueError("state.gatekeeper_ticket_operations must be an object")
 
         normalized = dict(state)
         normalized["schema"] = STATE_SCHEMA
@@ -364,6 +377,7 @@ class SealedStore:
         normalized["metrics"] = metrics[-MAX_METRICS:]
         normalized["intents"] = intents[-MAX_INTENTS:]
         normalized["vault"] = {"objects": objects}
+        normalized["gatekeeper_ticket_operations"] = operations
         return normalized
 
     def _decode_envelope(self, raw: Any) -> Any:
@@ -514,6 +528,20 @@ class SealedStore:
         self._refresh_for_read()
         return copy.deepcopy(list(self._state["vault"]["objects"].values()))
 
+    def get_gatekeeper_ticket_operation(self, operation_id: str) -> Optional[dict]:
+        """Read a linked operation only from this authenticated encrypted state."""
+        self._refresh_for_read()
+        record = self._state["gatekeeper_ticket_operations"].get(operation_id)
+        return copy.deepcopy(record) if record is not None else None
+
+    def put_gatekeeper_ticket_operation(self, operation_id: str, record: dict) -> None:
+        """Internal use: add operation evidence in the containing transaction."""
+        if self._transaction_depth == 0:
+            raise RuntimeError("gatekeeper operation must share ticket transaction")
+        if operation_id in self._state["gatekeeper_ticket_operations"]:
+            raise ValueError("GATEKEEPER_OPERATION_ALREADY_EXISTS")
+        self._state["gatekeeper_ticket_operations"][operation_id] = copy.deepcopy(record)
+
     def close(self) -> None:
         try:
             self._state.clear()
@@ -610,6 +638,64 @@ class SealedCore:
             "sla_deadline": ticket["sla_deadline_iso"],
             "status": ticket["status"],
         }
+
+    @staticmethod
+    def _validate_gatekeeper_operation(
+        operation_id: str, request_hash: str, scope_id: str
+    ) -> None:
+        """Validate the opaque token and authenticated caller-bound metadata.
+
+        The caller (future Gatekeeper wiring) must derive request_hash from
+        the VERIFIED signed business request; this method is not authentication.
+        """
+        if not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", operation_id):
+            raise ValueError("INVALID_GATEKEEPER_OPERATION_ID")
+        if not isinstance(request_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", request_hash):
+            raise ValueError("INVALID_GATEKEEPER_REQUEST_HASH")
+        if not isinstance(scope_id, str) or not scope_id or len(scope_id) > 256:
+            raise ValueError("INVALID_GATEKEEPER_SCOPE")
+
+    def get_gatekeeper_ticket_receipt(
+        self, operation_id: str, request_hash: str, scope_id: str
+    ) -> Optional[dict]:
+        """Read-only exact-match evidence; absence is NOT proof of non-execution."""
+        self._validate_gatekeeper_operation(operation_id, request_hash, scope_id)
+        record = self.store.get_gatekeeper_ticket_operation(operation_id)
+        if record is None:
+            return None
+        if (record.get("request_hash") != request_hash
+                or record.get("scope_id") != scope_id):
+            raise ValueError("GATEKEEPER_OPERATION_MISMATCH")
+        return copy.deepcopy(record["receipt"])
+
+    def handle_with_gatekeeper_operation(
+        self, raw_event: dict, *, operation_id: str,
+        request_hash: str, scope_id: str
+    ) -> dict:
+        """Create one ticket AND its recovery receipt in one encrypted commit.
+
+        This opt-in core primitive is intentionally NOT wired to Gatekeeper
+        yet. It does not clear any PENDING marker or change signed policy.
+        """
+        self._validate_gatekeeper_operation(operation_id, request_hash, scope_id)
+        with self.store.transaction():
+            existing = self.store.get_gatekeeper_ticket_operation(operation_id)
+            if existing is not None:
+                if (existing.get("request_hash") != request_hash
+                        or existing.get("scope_id") != scope_id):
+                    raise ValueError("GATEKEEPER_OPERATION_MISMATCH")
+                return copy.deepcopy(existing["receipt"])
+            # Nested transaction does not persist independently; all ticket,
+            # metric, intents and receipt share the outer store generation.
+            receipt = self.handle(raw_event)
+            self.store.put_gatekeeper_ticket_operation(operation_id, {
+                "kind": "NEW_TICKET",
+                "request_hash": request_hash,
+                "scope_id": scope_id,
+                "receipt": receipt,
+                "created_at": self._now_iso(),
+            })
+        return copy.deepcopy(receipt)
 
     def acknowledge_ticket(self, ticket_id: str) -> bool:
         ticket_id = self._validate_ticket_id(ticket_id)

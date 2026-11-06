@@ -1,5 +1,8 @@
 # Sealed-core development roadmap
 
+**Current bounded step (draft only):** build and validate an opt-in, atomic core-side `NEW_TICKET` operation receipt in the same encrypted generation as ticket/metrics/intents. Acceptance: exact ID replay, mismatch rejection, legacy compatibility and interrupted precommit/committed tests. **Next** connect authenticated Gatekeeper reservation IDs and scope without broadening signed capabilities; only then design audited owner-local reconciliation. No automatic pending reset or merge.
+
+
 **Current target:** [draft PR #8](https://github.com/levelinglucy/Sealed-core/pull/8) proposes a conservative response to missing Gatekeeper receipts after an interrupted local write. This is **not merged or released**. Previous concurrency and restore repairs remain integrated on main; protect data correctness before improving appearance or adding features.
 
 1. **File restore staging (integrated candidate, complete):** PR #2 merged, exact main `385c4cd0`, 12/12 unit tests and all nine self-tests passed in CI. Verified missing/corrupt chunks preserve existing file contents; no stable tag was created.

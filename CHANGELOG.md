@@ -1,5 +1,14 @@
 # Sealed-core changelog
 
+## Draft core-side atomic ticket receipt candidate (2026-11-06; PR #8, unmerged)
+
+**Components:** `sealed_core.py`, `tests/test_core_gatekeeper_operation.py`, README, engineering notes and roadmap. **Before:** a PENDING reservation had an opaque Gatekeeper-only ID with no independently verifiable corresponding core transaction; a separate receipt write would leave the same crash window.
+
+**Change and reason:** add an opt-in local core method that stores the ticket result and bound request hash/scope/operation ID together with the ticket, metric and intents in one encrypted transaction. Exact-ID replay returns the original result; hash or scope mismatch rejects reuse. Preserve ordinary `handle()` and legacy state. Tests cover precommit and postcommit `os._exit`, synthetic failed persist, exact replay and collisions. **Validation: pending fresh CI**; this entry must be updated after inspecting the exact candidate result.
+
+**Limitations:** no Gatekeeper wiring or owner-side pending reconciliation yet, so the reservation ID is still unlinked in actual signed requests. No automatic retry/resolution, stable tag, release or claim of power-cut/mobile verification. A source downgrade could ignore operation records; preserve the original encrypted store and code branch.
+
+
 
 ## Draft preparatory step — redacted owner-local PENDING inspection (2026-11-06; PR #8; unmerged)
 
