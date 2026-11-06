@@ -1,6 +1,14 @@
 # Sealed-core changelog
 
 
+## Draft test expansion — hard process-exit recovery checks (2026-11-06; PR #8; not merged)
+
+**Components:** new `tests/test_gatekeeper_hard_exit.py` plus README, developer notes, recovery guide and roadmap. **Why:** previously only injected Python exceptions tested the gap after a core commit; these still run cleanup and do not represent a terminated interpreter.
+
+**Observed:** two separate Python child processes used synthetic local-only secrets, a temporary encrypted store, and `os._exit` to bypass Python cleanup. A forced exit just after the core committed a ticket and persisted scope left one ticket and an encrypted pending marker; reopening Gatekeeper and retrying with a distinct valid nonce returned `OPERATION_OUTCOME_UNKNOWN` without creating another ticket. An exit after the marker but before core execution left zero tickets, yet correctly blocked the ambiguous retry. [Exact code-commit CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42252218491) passed **34/34 unit tests plus 9/9 core self-tests on each Python 3.11 and 3.12** at [`be1e8ae1`](https://github.com/levelinglucy/Sealed-core/commit/be1e8ae11c84b16cd0ca24bf73a06c0d8ae82223). All fixtures are synthetic.
+
+**Trade-offs and limits:** even a known precommit interruption strands a pending reservation; the runtime cannot prove the outcome for arbitrary write actions. `os._exit` is not a power cut, SIGKILL, mobile filesystem durability test or exactly-once transaction guarantee. No automatic reset, new endpoint, data migration, PR merge or stable release. Resume by designing a core-linked durable operation identity and owner-only audited reconciliation/rollback, rather than guessing from similar ticket content.
+
 ## Draft candidate — fail-closed uncertain Gatekeeper outcomes (2026-11-06; PR #8; not merged)
 
 **Components:** `gatekeeper_v2_2.py`, `tests/test_gatekeeper_idempotency.py`, README, developer notes, roadmap and `GATEKEEPER_RECOVERY.md`.
