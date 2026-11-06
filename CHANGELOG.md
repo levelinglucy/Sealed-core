@@ -1,5 +1,18 @@
 # Sealed-core changelog
 
+## Draft non-ticket PENDING provenance limit (2026-11-06; PR #8, unmerged)
+
+**Affected:** new `tests/test_non_ticket_pending_uncertainty.py`, Gatekeeper recovery guide, README, engineering decision, roadmap. No runtime API or policy change.
+
+**Previous evidence:** unmatched non-ticket reservations were conservatively blocked, but an owner might infer execution from a final ticket status such as `CLOSED`.
+
+**Change / reason:** a real, signed synthetic CLOSE was run in two distinct histories against an already-CLOSED core ticket. In one case execution was intercepted before the core; in the other it completed but the Gatekeeper receipt write failed. Both left `PENDING` + `NO_CORE_RECEIPT_UNKNOWN` and the same final CLOSED status, even though only one attempted the core close. Both freshly signed same-key retries remained blocked. The read-only triage preserved encrypted core and Gatekeeper bytes, and did not leak ticket IDs. This proves terminal status alone is not an attributable per-request commit receipt; no automated reconciliation/reset has been added.
+
+**Validation:** [code-head CI 42304466288](https://github.com/levelinglucy/Sealed-core/actions/runs/42304466288) succeeded on Python 3.11/3.12 (**56/56 unit tests per version**, plus core self-tests); final documentation-head CI must be checked separately.
+
+**Limits / release:** no trustworthy owner-only reconciliation for historical/non-ticket outcomes has been established. A per-action durable correlation protocol, power-loss evidence, trusted Pythonista/iPhone checks and safe code/store downgrade remain unproven. Keep PR #8 draft/unmerged and preserve matching encrypted/physical evidence. No tagged release.
+
+
 ## Draft pinned historical downgrade rehearsal and owner decision matrix (2026-11-06; PR #8, unmerged)
 
 **Affected:** `tests/test_downgrade_rehearsal.py`, GitHub Python Smoke checkout history depth, recovery runbook, README, developer notes and roadmap. Before this change source-only downgrade danger was reasoned from code but had not been tested against actual pinned older Gatekeeper code and encrypted synthetic PENDING copies.
