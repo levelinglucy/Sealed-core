@@ -273,8 +273,16 @@ class GatekeeperState:
 
         idem = state.get("idempotency", {})
         if len(idem) > MAX_IDEMPOTENCY:
-            ordered = sorted(idem.items(), key=lambda kv: kv[1].get("created_at", ""), reverse=True)[:MAX_IDEMPOTENCY]
-            state["idempotency"] = dict(ordered)
+            # Pending records mean a mutation might already have committed.
+            # Never evict them for an older timestamp: the next retry must
+            # fail closed rather than silently executing the operation again.
+            pending = {key: item for key, item in idem.items() if "result" not in item}
+            completed = sorted(
+                ((key, item) for key, item in idem.items() if "result" in item),
+                key=lambda kv: kv[1].get("created_at", ""), reverse=True,
+            )
+            remaining = max(0, MAX_IDEMPOTENCY - len(pending))
+            state["idempotency"] = {**pending, **dict(completed[:remaining])}
 
     def consume_nonce_and_check_idempotency(
         self,
@@ -300,7 +308,29 @@ class GatekeeperState:
                 if prior and prior.get("request_hash") != request_hash:
                     raise ValueError("IDEMPOTENCY_KEY_REUSED_FOR_DIFFERENT_REQUEST")
 
+            if idem_key and prior is None:
+                # Persist the reservation in the same encrypted write as the
+                # nonce, *before* any action can mutate the independent core.
+                # If the process dies later, a fresh signed retry cannot
+                # mistake the missing receipt for permission to execute again.
+                pending_count = sum(
+                    "result" not in item
+                    for item in state["idempotency"].values()
+                )
+                if pending_count >= MAX_IDEMPOTENCY:
+                    raise ValueError("IDEMPOTENCY_CAPACITY_REACHED")
+                state["idempotency"][idem_key] = {
+                    "request_hash": request_hash,
+                    "created_at": _format_utc(_utc_now()),
+                    "status": "PENDING",
+                }
+                self._prune(state)
+
             self._save_locked(state)
+            if prior is not None and "result" not in prior:
+                # This could mean a crash *before* or *after* the core commit.
+                # No automatic replay is safe; manual reconciliation is needed.
+                raise ValueError("OPERATION_OUTCOME_UNKNOWN")
             return copy.deepcopy(prior.get("result")) if prior else None
 
     def record_idempotent_result(
@@ -316,6 +346,7 @@ class GatekeeperState:
             state["idempotency"][idem_key] = {
                 "request_hash": request_hash,
                 "created_at": _format_utc(_utc_now()),
+                "status": "COMMITTED",
                 "result": copy.deepcopy(result),
             }
             self._save_locked(state)
