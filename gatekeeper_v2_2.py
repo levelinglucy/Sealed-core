@@ -8,7 +8,9 @@ Design:
 - per-principal HMAC signatures over canonical JSON;
 - timestamp skew + encrypted nonce registry blocks replay;
 - write actions require idempotency keys;
-- idempotent retries return the original result;
+- completed idempotent retries return the original result;
+- uncertain keyed writes remain PENDING and cannot be blindly retried
+  (draft recovery change; see GATEKEEPER_RECOVERY.md);
 - external acknowledgers are constrained to their own ticket scope;
 - explicit output allowlists; no raw-object passthrough;
 - no network listener and no remote I/O.
