@@ -59,6 +59,12 @@ Only consider a **consistent pre-change restore** of code, *both* encrypted stat
 
 For an owner reconciliation audit, record the redacted compound-key fingerprint, operation ID where present, encrypted-generation identifiers, disposition of external/physical outcomes, evidence provenance, recovery/rollback decision, timestamp and reviewer. Never store secrets or raw request payloads in that audit. Even convincing external evidence does not grant the present code a safe general-purpose PENDING reset. **There is no reset API in this candidate.**
 
+### Why a terminal ticket status is not proof of a pending CLOSE (2026-11-06)
+
+A synthetic controlled experiment in `tests/test_non_ticket_pending_uncertainty.py` built two **different histories** against already-CLOSED tickets: (1) an authenticated CLOSE was interrupted before it touched the core, and (2) the authenticated CLOSE actually reached the core but its Gatekeeper completion receipt was lost. Both ended with the same visible ticket state (`CLOSED`), a `PENDING` reservation and `NO_CORE_RECEIPT_UNKNOWN` from read-only triage. A freshly signed same-key retry remained blocked in both cases. The test also checked that triage did not rewrite encrypted evidence. [Code-head CI 42304466288](https://github.com/levelinglucy/Sealed-core/actions/runs/42304466288) passed on Python 3.11 and 3.12.
+
+**Decision:** ticket status, vault object presence, filesystem outputs, timestamp similarity and a lack of a core receipt are not *attributable commit evidence for a particular unlinked pending operation*. They can assist an owner-led investigation, but do not distinguish whether this action ran (or another operation produced the observed state). The encrypted PENDING reservation stores a request hash and operation ID, not a durable non-ticket action-specific receipt. For historical/unlinked/non-ticket cases, preserve PENDING and record a **blocked/unknown** disposition; there is deliberately **no general reset or replay API**. Revisit only when an operation-linked durable receipt or other provable, audited identity-to-effect protocol is implemented and checked. This is not a blanket claim that all reconciliation is impossible.
+
 ## Owner response when outcome is still unknown
 
 1. Stop automatic retries of the affected business action and preserve the original principal, action, idempotency-key reference, request business identity, local timestamps and redacted error, **not** signing secrets.
