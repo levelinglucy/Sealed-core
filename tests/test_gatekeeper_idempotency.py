@@ -83,7 +83,7 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
         replies = [None, None]
         failures = []
 
-        def synthetic_write(action, principal, payload):
+        def synthetic_write(action, principal, payload, *_operation):
             with mutex:
                 invocations.append(1)
                 sequence = len(invocations)
@@ -229,9 +229,11 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
             {"subject": "synthetic interrupted bind", "body": "local-only"},
             principal_id="creator-alpha", secret=EXTERNAL_SECRET,
         )
+        recovered = self.gate_two.request(second)
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertEqual(recovered["data"]["ticket_id"], created[0]["ticket_id"])
         self.assertEqual(
-            self.gate_two.request(second),
-            {"ok": False, "error": "OPERATION_OUTCOME_UNKNOWN"},
+            self.gate_two.state.ticket_scope(created[0]["ticket_id"]), "alpha"
         )
         self.assertEqual(len(self._open_tickets()), 1)
 
@@ -258,10 +260,9 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
             {"subject": "synthetic interrupted receipt", "body": "local-only"},
             principal_id="creator-alpha", secret=EXTERNAL_SECRET,
         )
-        self.assertEqual(
-            self.gate_two.request(second),
-            {"ok": False, "error": "OPERATION_OUTCOME_UNKNOWN"},
-        )
+        recovered = self.gate_two.request(second)
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertEqual(recovered["data"]["ticket_id"], created[0]["ticket_id"])
         self.assertEqual(len(self._open_tickets()), 1)
 
     def test_pending_reservation_is_retained_during_bounded_receipt_prune(self):
