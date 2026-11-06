@@ -1,5 +1,16 @@
 # Sealed-core changelog
 
+## Draft pinned historical downgrade rehearsal and owner decision matrix (2026-11-06; PR #8, unmerged)
+
+**Affected:** `tests/test_downgrade_rehearsal.py`, GitHub Python Smoke checkout history depth, recovery runbook, README, developer notes and roadmap. Before this change source-only downgrade danger was reasoned from code but had not been tested against actual pinned older Gatekeeper code and encrypted synthetic PENDING copies.
+
+**Change / why:** two subprocess regressions use the actual pre-PR merged code at `6f6e9c67` with **only disposable copies** of test-created encrypted stores. An already-committed ticket with a PENDING marker was duplicated by old Gatekeeper upon same-key fresh-nonce retry (**1 → 2**); a precommit PENDING also triggered old execution (**0 → 1**). Original synthetic encrypted data and output stayed unchanged. The owner runbook now forbids source-only old-writer rollback with unresolved PENDING and documents a conservative evidence/backup matrix. No production operation, automatic pending clearing, or signed/network change.
+
+**Validation:** [CI 42296125471](https://github.com/levelinglucy/Sealed-core/actions/runs/42296125471) completed **55/55 unit tests plus 9/9 core self-tests** on EACH of Python 3.11 and 3.12, including both unskipped historical tests. This was the code/workflow head; the final documentation revision still requires checking.
+
+**Limitations / rollback:** tests used Linux GitHub Actions with synthetic data. Full-history checkout adds CI cost; source archives without pinned Git object skip these tests. No safe live downgrade, general reconciliation/reset API, power-loss, Pythonista/iPhone, tag, release or merge is established. Keep PR #8 draft; maintain the original encrypted stores and matching snapshot until disposition is reviewable.
+
+
 ## Draft owner-local encrypted evidence triage (2026-11-06; PR #8, unmerged)
 
 **Affected:** `gatekeeper_v2_2.py`, `tests/test_gatekeeper_evidence_triage.py`, recovery guide, README, roadmap and developer decisions. **Before:** `inspect_pending_local()` listed redacted PENDING markers but required an operator to correlate them with core records manually.
