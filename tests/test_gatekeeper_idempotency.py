@@ -339,5 +339,28 @@ class GatekeeperIdempotencyTests(unittest.TestCase):
             )
 
 
+    def test_preexisting_completed_receipt_without_status_remains_readable(self):
+        """The v2.2 legacy receipt schema had no explicit COMMITTED status."""
+        from sealed_core import _StoreFileLock
+        req = self.signed(
+            "NEW_TICKET", "legacy-completed-0001", "legacy-nonce-000001",
+            {"subject": "historical receipt"},
+        )
+        saved_result = {
+            "ok": True, "action": "NEW_TICKET",
+            "data": {"ticket_id": "existing-synthetic-receipt"},
+        }
+        with _StoreFileLock(self.gate_one.state.lock_path):
+            state = self.gate_one.state._load_locked()
+            state["idempotency"]["owner-local:legacy-completed-0001"] = {
+                "request_hash": self.gate_one._business_hash(req),
+                "created_at": "2026-11-06T12:00:00Z",
+                "result": saved_result,
+            }
+            self.gate_one.state._save_locked(state)
+        self.gate_two._execute = lambda *_: self.fail("legacy receipt was replayed")
+        self.assertEqual(self.gate_two.request(req), saved_result)
+
+
 if __name__ == "__main__":
     unittest.main()
