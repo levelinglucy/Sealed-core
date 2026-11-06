@@ -2,13 +2,13 @@
 
 ## Development summary
 
-**Status:** local-only modular stack; [file-restore integrity PR #2](https://github.com/levelinglucy/Sealed-core/pull/2) merged as an integrated candidate at [`385c4cd0`](https://github.com/levelinglucy/Sealed-core/commit/385c4cd0c4039ac76c268af96c8a688c0bd7e328); not a tagged stable release.  
-**Latest change (2026-11-06):** stage decrypted vault files beside the target, verify every AES-GCM chunk and the whole-object SHA-256, then publish by atomic replacement or exclusive hard link. A corrupt/missing chunk no longer truncates an existing file when `overwrite=True`.  
-**Validation:** 12/12 unittest cases and all nine core self-tests passed on [PR CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42217418606) and [merged-main CI](https://github.com/levelinglucy/Sealed-core/actions/runs/42217565879) (Python 3.12).  
-**Next steps:** (1) fix directory restore's destructive pre-extraction overwrite; (2) review gatekeeper nonce/idempotency and scope transaction boundaries; (3) gather trusted target-device evidence.  
-**Known limitations:** ordinary file restore writes temporary plaintext with owner-only filesystem permissions; a hard process crash can leave a staging file that should be removed securely. File restoration uses same-directory atomic publication, but this is not proof of full power-loss durability on every filesystem. Directory overwrite is **not yet safe** when extraction fails; avoid `restore_directory(..., overwrite=True)` with valuable existing contents until its repair is validated.  
+**Status:** local-only modular stack; file and directory restore integrity fixes prepared on a reviewable branch for the next candidate, **not a tagged stable release**. File restore PR #2 and its documentation PR #3 remain merged.
+**Goal:** fail safely on encrypted vault corruption and extracted archive errors, without erasing existing restored data.
+**Latest change (2026-11-06):** directory archives now decrypt and extract in a private sibling staging tree before any existing destination moves. Overwrite holds the old tree in a recoverable same-filesystem backup until publication succeeds; ordinary publish failures roll back. Path traversal, unexpected archive roots and unsafe link fallbacks are rejected.
+**Validation:** nine new synthetic directory restore regression cases and existing file/core self-tests are included for CI; this candidate is not considered verified until the PR checks complete. See [developer notes](./DEV_NOTES.md) and [changelog](./CHANGELOG.md) for precise evidence.
+**Next steps:** (1) verify candidate tests and merge if safe; (2) review gatekeeper nonce/idempotency and scope transaction boundaries; (3) gather trusted target-device evidence.
+**Limitations:** directory promotion uses two renames, **not one atomic swap**: abrupt interruption can strand an old tree as `.NAME.sealed-backup-*` and may leave a visible gap before publication. After an ordinary failed rollback the backup is deliberately retained for manual recovery. Hard termination can also strand private plaintext staging; inspect output roots before deleting backups or staging. Older Python versions without `tarfile.data_filter` reject archived links/special files rather than using an unsafe extraction fallback. Concurrent non-cooperating writers and power-loss durability are not proven; avoid restoring into concurrently edited destinations. Pythonista/iPhone has not been tested.
 [Changelog](./CHANGELOG.md) · [Engineering decisions](./DEV_NOTES.md) · [Roadmap](./ROADMAP.md)
-
 
 ## Modular stack wiring
 
