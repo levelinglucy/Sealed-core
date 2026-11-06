@@ -221,6 +221,9 @@ class GatekeeperState:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dir / "gatekeeper_state.json"
         self.lock_path = self.dir / ".gatekeeper.lock"
+        # Separate from the state mutex: one cooperating operation must finish
+        # and record its result before a same-key retry can authenticate.
+        self.request_lock_path = self.dir / ".gatekeeper-request.lock"
 
     @staticmethod
     def _new_state() -> dict:
@@ -520,24 +523,31 @@ class GatekeeperV22:
 
     def request(self, request: dict) -> dict:
         try:
-            auth = self._authenticate(request)
-            action, principal, payload, request_hash, idempotency_key, prior = auth
-            if prior is not None:
-                return copy.deepcopy(prior)
+            # Nonce consumption alone does not reserve an idempotency key:
+            # without this cross-process gate, simultaneous retries can both
+            # mutate the core before either one records its result. Keep scoped
+            # reads within the same boundary as ticket creation/scope binding.
+            # This prevents ordinary concurrent duplicates, NOT crash-window
+            # exactly-once semantics across two encrypted state files.
+            with _StoreFileLock(self.state.request_lock_path):
+                auth = self._authenticate(request)
+                action, principal, payload, request_hash, idempotency_key, prior = auth
+                if prior is not None:
+                    return copy.deepcopy(prior)
 
-            result = {
-                "ok": True,
-                "action": action,
-                "data": self._execute(action, principal, payload),
-            }
-            if idempotency_key:
-                self.state.record_idempotent_result(
-                    request["principal_id"],
-                    idempotency_key,
-                    request_hash,
-                    result,
-                )
-            return result
+                result = {
+                    "ok": True,
+                    "action": action,
+                    "data": self._execute(action, principal, payload),
+                }
+                if idempotency_key:
+                    self.state.record_idempotent_result(
+                        request["principal_id"],
+                        idempotency_key,
+                        request_hash,
+                        result,
+                    )
+                return result
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         except NotImplementedError:
