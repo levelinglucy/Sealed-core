@@ -18,6 +18,19 @@ Do **not** automatically submit the operation again under a different idempotenc
 
 An orphan ticket can exist in the core but remain invisible to an external acknowledger when scope binding failed; the owner must inspect it locally. Do not guess or invent a scope binding. No new remotely exposed interface is introduced.
 
+## Read-only owner-local pending inspection (draft candidate)
+
+The draft provides a **local Python helper**, not a signed Gatekeeper action, API endpoint, recovery button or authorisation to restart a write. With \`SEALED_OWNER_SECRET\` set on the trusted machine, an owner may inspect only the redacted pending records:
+
+\`\`\`python
+from gatekeeper_v2_2 import inspect_pending_local
+records = inspect_pending_local("sealed_storage")  # use the actual local store path
+for item in records:
+    print(item)
+\`\`\`
+
+Each record includes \`key_ref_sha256\` (the SHA-256 of the existing \`principal_id:idempotency_key\` string), \`request_hash\`, \`created_at\`, \`status\`, and an optional random \`operation_id\`. It does **not** return raw business keys, principal IDs, nonces, signed payloads or secrets. Legacy pending markers show \`operation_id: None\`. A newly generated operation ID is **currently only in Gatekeeper's store**: neither its presence nor absence proves a core mutation, and it is **not a reconciliation key yet**. Do not automatically clear any marker, including apparently old ones. Inspect on a trusted, owner-controlled device and avoid publishing the diagnostics.
+
 ## Compatibility and rollback cautions
 
 The candidate extends existing encrypted Gatekeeper state values with `status: PENDING` before execution and `status: COMMITTED` after receipt storage. Old completed entries with only `result` remain valid. The envelope schema, secrets and signatures are unchanged. The number of stored idempotency entries is bounded. Pending entries are retained in preference to completed entries; exhausted pending capacity rejects new keyed requests with `IDEMPOTENCY_CAPACITY_REACHED` rather than discarding uncertain operations. Older completed receipts may still age out of this bounded cache.
