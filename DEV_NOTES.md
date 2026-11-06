@@ -2,11 +2,11 @@
 
 ## Development summary
 
-**Stage:** directory-restore integrity candidate on topic branch; no stable tag or publication.
+**Stage:** directory-restore integrity candidate merged via [PR #4](https://github.com/levelinglucy/Sealed-core/pull/4) at `7e647ed0`; no new stable tag or release.
 **Goal:** prevent a corrupt or malformed encrypted directory archive from deleting existing restored content.
 **Latest change:** stage verified archive and extracted tree, validate one expected top-level directory, then rename the previous destination to a recoverable sibling before publishing the new tree; roll back on ordinary failure.
-**Checks:** eleven new isolated directory tests added; final CI pending. Existing file restore and core self-tests remain requirements.
-**Next:** run candidate CI, address findings, merge when safe, then investigate gatekeeper consistency and obtain trusted Pythonista evidence.
+**Checks:** 23/23 unit tests and 9/9 core self-tests passed for each Python 3.11/3.12 on the exact [PR revision](https://github.com/levelinglucy/Sealed-core/actions/runs/42225523051) and [merged main](https://github.com/levelinglucy/Sealed-core/actions/runs/42225646052). Eleven new directory cases cover both normal restoration and failure recovery.
+**Next:** investigate gatekeeper consistency using isolated tests; consider crash-backup recovery tooling; obtain trusted Pythonista evidence.
 **Blockers / known risk:** multi-rename publication is not crash-atomic; interrupted runs can leave `.NAME.sealed-backup-*` and private temporary plaintext. No guarantee against independent concurrent writers or power loss; old Python tar fallbacks decline links/special files.
 [README](./README.md) · [Changelog](./CHANGELOG.md) · [Roadmap](./ROADMAP.md)
 
